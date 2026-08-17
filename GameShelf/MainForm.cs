@@ -20,17 +20,35 @@ public sealed class MainForm : Form
     private bool _fullScreen;
     private Rectangle _restoreBounds;
     private FormBorderStyle _restoreBorderStyle = FormBorderStyle.Sizable;
-    private bool _responsiveRefreshQueued;
+    private readonly Dictionary<int, DateTime> _playStatusClicks = [];
+    private readonly Panel _resizeMask = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(27, 29, 30), Visible = false };
+    private bool _interactiveResize;
+    private bool _resizeRefreshQueued;
+    // FormBorderStyle/WindowState changes emit Resize but not ResizeEnd. Suppress
+    // resize handling around those programmatic transitions and refresh once after.
+    private bool _suppressResizeLayout;
 
     public MainForm(DataStore store)
     {
         _store = store; _packages = new PackageService(store); _processTracker = new GameProcessTracker(store); _t = new Localizer(store.Data.Settings.Language);
         Text = "GameShelf"; Font = new Font("Segoe UI", 14f, FontStyle.Bold); MinimumSize = new Size(720, 405); KeyPreview = true; StartPosition = FormStartPosition.Manual; FormBorderStyle = FormBorderStyle.Sizable;
-        RestoreWindow(); Controls.Add(_content); Controls.Add(_top); ApplyTheme();
+        RestoreWindow(); Controls.Add(_content); Controls.Add(_top); Controls.Add(_resizeMask); ApplyTheme();
         _selectedId = store.Data.Settings.SelectedGameId;
         _management = false;
         if (_selectedId is not null && store.Data.Games.Any(game => game.Id == _selectedId) && store.Data.Settings.Page is "detail" or "edit") ShowDetail(); else { _selectedId = null; ShowLibrary(); }
-        KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => _processTracker.Dispose(); ResizeEnd += (_, _) => EnforceAspect(); Resize += (_, _) => QueueResponsiveLayout();
+        KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => _processTracker.Dispose();
+        Shown += (_, _) =>
+        {
+            if (!_fullScreen) return;
+            // RestoreWindow runs before the native form handle exists, so its
+            // fullscreen transition cannot queue the usual post-transition refresh.
+            RefreshResponsiveLayout();
+            EndResizeMask();
+            AppLog.Debug("UI", $"Restored fullscreen on first show; refreshed '{_page}' once at {ClientSize.Width}x{ClientSize.Height}.");
+        };
+        ResizeBegin += (_, _) => BeginInteractiveResize();
+        ResizeEnd += (_, _) => EndInteractiveResize();
+        Resize += (_, _) => QueueResponsiveLayout();
         _processTracker.StateChanged += (_, e) =>
         {
             if (IsDisposed || !IsHandleCreated) return;
@@ -67,8 +85,42 @@ public sealed class MainForm : Form
 
     private void ToggleFullscreen()
     {
-        if (!_fullScreen) { _restoreBounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds; _restoreBorderStyle = FormBorderStyle; FormBorderStyle = FormBorderStyle.None; WindowState = FormWindowState.Maximized; _fullScreen = true; }
-        else { WindowState = FormWindowState.Normal; FormBorderStyle = _restoreBorderStyle; Bounds = _restoreBounds; _fullScreen = false; }
+        var entering = !_fullScreen;
+        BeginResizeMask();
+        _suppressResizeLayout = true;
+        AppLog.Debug("UI", entering ? "Entering fullscreen; drag-resize layout scheduling is suspended." : "Leaving fullscreen; drag-resize layout scheduling is suspended.");
+        try
+        {
+            if (entering)
+            {
+                _restoreBounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+                _restoreBorderStyle = FormBorderStyle;
+                // Set this first so native messages produced by the transition are
+                // consistently treated as fullscreen messages.
+                _fullScreen = true;
+                FormBorderStyle = FormBorderStyle.None;
+                WindowState = FormWindowState.Maximized;
+            }
+            else
+            {
+                WindowState = FormWindowState.Normal;
+                FormBorderStyle = _restoreBorderStyle;
+                Bounds = _restoreBounds;
+                _fullScreen = false;
+            }
+        }
+        finally { _suppressResizeLayout = false; }
+
+        // Programmatic resizes do not raise ResizeEnd.  Queue exactly one rebuild
+        // after Windows has committed the final client size.
+        if (!IsHandleCreated) return;
+        BeginInvoke((Action)(() =>
+        {
+            if (IsDisposed) return;
+            RefreshResponsiveLayout();
+            EndResizeMask();
+            AppLog.Debug("UI", $"Fullscreen transition completed; refreshed '{_page}' once at {ClientSize.Width}x{ClientSize.Height}.");
+        }));
     }
     private void EnforceAspect() { if (WindowState == FormWindowState.Normal && !_fullScreen && Width > 0) Height = Math.Max(MinimumSize.Height, (int)Math.Round(Width * 9d / 16d)); }
 
@@ -186,7 +238,7 @@ public sealed class MainForm : Form
     {
         var dark = IsDarkTheme;
         button.UseVisualStyleBackColor = false;
-        button.BackColor = ButtonColor(button.Text, dark);
+        button.BackColor = ButtonColor(button.Tag as string ?? button.Text, dark);
         button.ForeColor = dark ? Color.FromArgb(200, 239, 250) : Color.FromArgb(255, 250, 224);
         button.FlatStyle = FlatStyle.Flat;
         button.FlatAppearance.BorderColor = dark ? ControlPaint.Light(button.BackColor, .35f) : ControlPaint.Dark(button.BackColor, .25f);
@@ -204,10 +256,17 @@ public sealed class MainForm : Form
         "☀" or "☾" => dark ? Color.FromArgb(163, 126, 42) : Color.FromArgb(190, 153, 51),
         _ => dark ? Color.FromArgb(45, 119, 115) : Color.FromArgb(53, 143, 135)
     };
-    private Button CreateIconButton(string glyph, string tooltip, EventHandler click)
+    private Button CreateIconButton(string glyph, string tooltip, EventHandler click, string? iconKey = null)
     {
-        var b = new Button { Text = glyph, Width = 90, Height = 76, Margin = new Padding(12), AccessibleName = tooltip, TabStop = true };
-        StyleButton(b); ApplyRoundedCorners(b); new ToolTip().SetToolTip(b, tooltip); b.Click += click; return b;
+        iconKey ??= "glyph:" + glyph;
+        var b = new Button { Text = glyph, Tag = glyph, Width = 90, Height = 76, Margin = new Padding(12), AccessibleName = tooltip, TabStop = true };
+        StyleButton(b); ApplyRoundedCorners(b); new ToolTip().SetToolTip(b, tooltip); b.Click += click;
+        if (_store.Data.Settings.ButtonIcons.TryGetValue(iconKey, out var vector) && !string.IsNullOrWhiteSpace(vector))
+        {
+            b.Text = "";
+            b.Paint += (_, e) => { e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; StatusIconVectors.Draw(e.Graphics, b.ClientRectangle, vector); };
+        }
+        return b;
     }
     private static void ApplyRoundedCorners(Button button)
     {
@@ -283,16 +342,18 @@ public sealed class MainForm : Form
         if (_page == "library" && _management)
         {
             var add = CreateIconButton("＋", "Add game", (_, _) => AddGame()); add.Location = new Point(nextLeft, 14); _top.Controls.Add(add); nextLeft += 106;
-            var import = CreateIconButton("⇧", "Import game", (_, _) => ImportGame()); import.Location = new Point(nextLeft, 14); _top.Controls.Add(import);
+            var import = CreateIconButton("⇧", "Import game", (_, _) => ImportGame()); import.Location = new Point(nextLeft, 14); _top.Controls.Add(import); nextLeft += 106;
+            var dimensions = CreateIconButton("☷", "Choose library card dimensions", (_, _) => ChooseHomeDisplayDimensions()); dimensions.Location = new Point(nextLeft, 14); _top.Controls.Add(dimensions);
         }
         if (_page == "library") BuildHeaderFilters();
         _top.Controls.Add(new Panel { Dock = DockStyle.Bottom, Height = 4, BackColor = Color.FromArgb(244, 204, 89) });
     }
     private void BuildHeaderFilters()
     {
-        var filterButton = CreateIconButton("", "Filter games", (_, _) => ShowFilterPopup());
+        var filterButton = CreateIconButton("", "Filter games", (_, _) => ShowFilterPopup(), "filter");
         filterButton.Paint += (_, e) =>
         {
+            if (_store.Data.Settings.ButtonIcons.TryGetValue("filter", out var vector) && !string.IsNullOrWhiteSpace(vector)) return;
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             var centerX = filterButton.ClientSize.Width / 2f; var centerY = filterButton.ClientSize.Height / 2f - S(4);
             using var brush = new SolidBrush(Color.White);
@@ -343,6 +404,23 @@ public sealed class MainForm : Form
         buttons.Controls.Add(apply); buttons.Controls.Add(clear); popup.Controls.Add(scroll); popup.Controls.Add(buttons);
         if (popup.ShowDialog(this) == DialogResult.OK) ShowLibrary();
     }
+    private void ChooseHomeDisplayDimensions()
+    {
+        using var popup = new Form { Text = "Library card dimensions", StartPosition = FormStartPosition.CenterParent, Size = new Size(S(650), S(520)), MinimumSize = new Size(520, 420), BackColor = Color.FromArgb(35, 38, 39), ForeColor = Color.White, Font = Font };
+        var selected = _store.Data.Settings.HomeDisplayDimensionIds.ToHashSet();
+        var message = new Label { Dock = DockStyle.Top, Height = S(56), Padding = new Padding(S(18), S(12), S(18), 0), Text = "Choose up to three dimensions to show on Library cards.", ForeColor = Color.FromArgb(244, 204, 89), Font = new Font(Font.FontFamily, S(15), FontStyle.Bold) };
+        var list = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(S(18)), BackColor = popup.BackColor };
+        foreach (var dimension in _store.Data.TagSchema)
+        {
+            var id = dimension.DimensionId; var itemFont = new Font(Font.FontFamily, S(14), FontStyle.Bold); var measured = TextRenderer.MeasureText(dimension.Name, itemFont);
+            var item = new CheckBox { Text = dimension.Name, Appearance = Appearance.Button, Checked = selected.Contains(id), AutoSize = false, Width = measured.Width + S(30), Height = Math.Max(S(46), measured.Height + S(18)), TextAlign = ContentAlignment.MiddleCenter, Margin = new Padding(S(6)), FlatStyle = FlatStyle.Flat, ForeColor = Color.White, BackColor = Color.FromArgb(72, 83, 93), Font = itemFont };
+            item.FlatAppearance.CheckedBackColor = Color.FromArgb(104, 76, 151); item.CheckedChanged += (_, _) => { if (item.Checked && !selected.Contains(id) && selected.Count >= 3) { item.Checked = false; return; } if (item.Checked) selected.Add(id); else selected.Remove(id); };
+            list.Controls.Add(item);
+        }
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = S(92), FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(S(12), S(8), S(12), S(8)), BackColor = popup.BackColor };
+        var save = CreateIconButton("✓", "Save library card dimensions", (_, _) => { _store.SetHomeDisplayDimensions(selected); popup.DialogResult = DialogResult.OK; }); buttons.Controls.Add(save);
+        popup.Controls.AddRange([list, message, buttons]); if (popup.ShowDialog(this) == DialogResult.OK) ShowLibrary();
+    }
 
     private void Clear() { _content.Controls.Clear(); }
     private void ShowCurrent() { if (_page == "library") ShowLibrary(); else if (_page == "detail") ShowDetail(); else if (_page == "edit") ShowEdit(); else ShowGlobal(); }
@@ -353,11 +431,52 @@ public sealed class MainForm : Form
         _content.Padding = new Padding(S(42));
         if (_page == "edit") CenterEditLayout(); else ShowCurrent();
     }
+    private void BeginResizeMask()
+    {
+        if (IsDisposed) return;
+        _resizeMask.Visible = true;
+        _resizeMask.BringToFront();
+    }
+    private void EndResizeMask()
+    {
+        if (!IsDisposed) _resizeMask.Visible = false;
+    }
+    private void BeginInteractiveResize()
+    {
+        if (_suppressResizeLayout || _fullScreen) return;
+        _interactiveResize = true;
+        BeginResizeMask();
+        AppLog.Debug("UI", "Interactive resize started; page presentation is masked until the final layout.");
+    }
+    private void EndInteractiveResize()
+    {
+        if (_suppressResizeLayout || !_interactiveResize) return;
+        _interactiveResize = false;
+        _suppressResizeLayout = true;
+        try { EnforceAspect(); }
+        finally { _suppressResizeLayout = false; }
+        RefreshResponsiveLayout();
+        EndResizeMask();
+        AppLog.Debug("UI", $"Interactive resize finished; refreshed '{_page}' once at {ClientSize.Width}x{ClientSize.Height}.");
+    }
     private void QueueResponsiveLayout()
     {
-        if (_responsiveRefreshQueued || IsDisposed || WindowState == FormWindowState.Minimized || ClientSize.Width < 100) return;
-        _responsiveRefreshQueued = true;
-        BeginInvoke((Action)(() => { _responsiveRefreshQueued = false; RefreshResponsiveLayout(); }));
+        // ResizeEnd is not sent for fullscreen/maximize transitions. Fullscreen
+        // performs its own one-shot refresh, while an interactive resize remains
+        // masked and is laid out only at ResizeEnd.
+        if (IsDisposed || _suppressResizeLayout || _fullScreen || WindowState == FormWindowState.Minimized || ClientSize.Width < 100) return;
+        if (_interactiveResize) { BeginResizeMask(); return; }
+        if (_resizeRefreshQueued || !IsHandleCreated) return;
+        _resizeRefreshQueued = true;
+        BeginResizeMask();
+        BeginInvoke((Action)(() =>
+        {
+            _resizeRefreshQueued = false;
+            if (IsDisposed || _suppressResizeLayout || _fullScreen || WindowState == FormWindowState.Minimized) { EndResizeMask(); return; }
+            RefreshResponsiveLayout();
+            EndResizeMask();
+            AppLog.Debug("UI", $"Programmatic resize refreshed '{_page}' once at {ClientSize.Width}x{ClientSize.Height}.");
+        }));
     }
     private void CenterEditLayout()
     {
@@ -368,14 +487,15 @@ public sealed class MainForm : Form
     }
     private void EnableWheelScroll(Control root)
     {
-        root.MouseWheel += (_, e) =>
-        {
-            var bar = _content.VerticalScroll;
-            if (!bar.Visible) return;
-            var next = Math.Clamp(bar.Value - e.Delta, bar.Minimum, Math.Max(bar.Minimum, bar.Maximum - bar.LargeChange + 1));
-            bar.Value = next; _content.PerformLayout();
-        };
+        root.MouseWheel += (_, e) => ScrollContentByWheel(e.Delta);
         foreach (Control child in root.Controls) EnableWheelScroll(child);
+    }
+    private void ScrollContentByWheel(int delta)
+    {
+        var bar = _content.VerticalScroll;
+        if (!bar.Visible) return;
+        var next = Math.Clamp(bar.Value - delta, bar.Minimum, Math.Max(bar.Minimum, bar.Maximum - bar.LargeChange + 1));
+        bar.Value = next; _content.PerformLayout();
     }
     private Panel FieldCard(Control field, bool tagField = false)
     {
@@ -386,6 +506,7 @@ public sealed class MainForm : Form
     }
     private void ShowLibrary()
     {
+        if (_store.RefreshAllGamePathStatuses()) _store.Save();
         _page = "library"; _management = _management && _page == "library"; BuildTop(!_management); Clear();
         var grid = new FlowLayoutPanel { Width = _content.ClientSize.Width - 60, AutoSize = true, WrapContents = true };
         foreach (var game in FilteredGames()) grid.Controls.Add(GameCard(game));
@@ -423,7 +544,12 @@ public sealed class MainForm : Form
         var id = new Label { Text = $"#{game.Id}", Left = S(12), Top = S(238), Width = cardWidth - S(24), Height = S(40), Font = new Font(Font.FontFamily, S(24), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
         var title = new Label { Text = game.Title, Left = S(12), Top = S(280), Width = cardWidth - S(24), Height = S(82), AutoEllipsis = true, Font = new Font(Font.FontFamily, S(22), FontStyle.Bold), ForeColor = Color.White };
         var tags = new FlowLayoutPanel { Left = S(9), Top = S(365), Width = cardWidth - S(18), Height = S(71), AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
-        foreach (var text in _store.Data.TagSchema.Select((d, i) => d.Values.GetValueOrDefault(game.Tags[i]) ?? string.Empty).Where(x => !string.IsNullOrWhiteSpace(x))) tags.Controls.Add(FilterChip(text));
+        foreach (var dimension in HomeDisplayDimensions())
+        {
+            var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == dimension.DimensionId);
+            var text = index >= 0 ? dimension.Values.GetValueOrDefault(game.Tags.ElementAtOrDefault(index)) ?? string.Empty : string.Empty;
+            if (!string.IsNullOrWhiteSpace(text)) tags.Controls.Add(FilterChip(text));
+        }
         card.Controls.AddRange([image, id, title, tags]);
         var statusHeight = S(59); var gap = S(8); var statusWidth = (cardWidth - S(18) - gap) / 2;
         card.Controls.Add(StatusBlock(StatusKind.Play, game.PlayStatusId, new Rectangle(S(9), cardHeight - statusHeight - S(9), statusWidth, statusHeight)));
@@ -445,6 +571,9 @@ public sealed class MainForm : Form
         }
         return card;
     }
+    private IEnumerable<TagDimension> HomeDisplayDimensions() => _store.Data.Settings.HomeDisplayDimensionIds
+        .Select(id => _store.Data.TagSchema.FirstOrDefault(dimension => dimension.DimensionId == id))
+        .Where(dimension => dimension is not null).Cast<TagDimension>();
     private Image LoadImage(GameEntry g)
     {
         var file = _store.ImagePath(g);
@@ -471,11 +600,12 @@ public sealed class MainForm : Form
         new ToolTip().SetToolTip(light, text);
         return light;
     }
-    private Panel StatusBlock(StatusKind kind, int id, Rectangle bounds)
+    private Panel StatusBlock(StatusKind kind, int id, Rectangle bounds, MouseEventHandler? mouseUp = null)
     {
         var text = StatusName(kind, id);
         var block = new Panel { Bounds = bounds, BackColor = StatusColor(kind, id), AccessibleName = text };
         block.Paint += (_, e) => { e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; StatusIconVectors.Draw(e.Graphics, block.ClientRectangle, StatusIconVector(kind, id)); };
+        if (mouseUp is not null) block.MouseUp += mouseUp;
         ApplyRoundedCorners(block, S(13)); new ToolTip().SetToolTip(block, text);
         return block;
     }
@@ -484,7 +614,8 @@ public sealed class MainForm : Form
     {
         if (_selectedId is null) { ShowLibrary(); return; }
         _page = "detail"; BuildTop(true); Clear(); var g = _store.GetGame(_selectedId.Value);
-        BuildDetailPage(g);
+        if (_store.RefreshGamePathStatus(g)) _store.Save();
+        BuildDetailPageV2(g);
         return;
 #if false
         var availableWidth = Math.Max(S(420), _content.ClientSize.Width - _content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - S(8));
@@ -562,19 +693,104 @@ public sealed class MainForm : Form
 
         var metadata = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = false, Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(0, S(24), 0, 0), BackColor = page.BackColor };
         if (!narrow) page.SetColumnSpan(metadata, 2);
-        metadata.Controls.Add(PathLink("Game: " + (string.IsNullOrEmpty(g.GamePath) ? _t["none"] : g.GamePath), gameAbsolutePath));
+        metadata.Controls.Add(PathLink("Game: " + (string.IsNullOrEmpty(g.GamePath) ? _t["none"] : g.GamePath), gameAbsolutePath, PathRules.IsValidGameExe(gameAbsolutePath)));
         metadata.Controls.Add(DetailLabel("Save root: " + _store.SaveRootName(g.SaveRootId)));
-        metadata.Controls.Add(PathLink("Save: " + (string.IsNullOrEmpty(g.SavePath) ? _t["none"] : g.SavePath), saveAbsolutePath));
+        metadata.Controls.Add(PathLink("Save: " + (string.IsNullOrEmpty(g.SavePath) ? _t["none"] : g.SavePath), saveAbsolutePath, PathRules.IsValidSaveTarget(saveAbsolutePath)));
         metadata.Controls.Add(DetailLabel("Region: " + RegionAlias(g.RegionCommandId)));
         var export = CreateIconButton("⇩", "Export game", (_, _) => ExportGame(g)); export.Margin = new Padding(0, S(28), 0, 0); metadata.Controls.Add(export);
         page.Controls.Add(metadata, 0, narrow ? 3 : 2);
         holder.Controls.Add(page); _content.Controls.Add(holder); EnableWheelScroll(page);
     }
-    private Label DetailLabel(string text) => new() { Text = text, AutoSize = true, MaximumSize = new Size(Math.Max(S(900), _content.ClientSize.Width - S(100)), 0), Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black, Margin = new Padding(0, S(8), 0, S(8)) };
-    private Label PathLink(string label, string path)
+    private void BuildDetailPageV2(GameEntry game)
     {
-        var valid = PathRules.IsValidGameExe(path) || PathRules.IsValidSaveTarget(path);
-        var availableWidth = Math.Max(S(420), _content.ClientSize.Width - _content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - S(24));
+        var gamePath = _store.ResolveGamePath(game.GamePath); var savePath = _store.ResolveSavePath(game);
+        var gameValid = PathRules.IsValidGameExe(gamePath); var saveValid = PathRules.IsValidSaveTarget(savePath);
+        var availableWidth = Math.Max(S(520), _content.ClientSize.Width - _content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - S(8));
+        var pageWidth = Math.Min(availableWidth, S(1160)); var sectionWidth = pageWidth - S(48);
+        var holder = new Panel { Width = availableWidth, Margin = Padding.Empty, BackColor = _content.BackColor };
+        var page = new TableLayoutPanel { ColumnCount = 1, Width = pageWidth, Padding = new Padding(S(24)), BackColor = Color.FromArgb(35, 38, 39), Margin = Padding.Empty, Left = (availableWidth - pageWidth) / 2 };
+        page.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, sectionWidth));
+
+        // Section 1 uses an equal hidden 1A/1B split.  The 1B content determines
+        // the section height; the 3:4 cover is then centred within 1A so its top
+        // aligns with the number row and its bottom aligns with the tag area.
+        var imageColumnWidth = sectionWidth / 2; var headlineWidth = sectionWidth - imageColumnWidth; var headlineContentWidth = headlineWidth - S(20);
+        var titleFont = new Font(Font.FontFamily, S(34), FontStyle.Bold);
+        var titleMeasure = TextRenderer.MeasureText(game.Title, titleFont, new Size(headlineContentWidth, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
+        var tagChips = new List<Label>();
+        for (var index = 0; index < _store.Data.TagSchema.Count; index++)
+        {
+            var dimension = _store.Data.TagSchema[index]; var value = dimension.Values.GetValueOrDefault(game.Tags.ElementAtOrDefault(index)) ?? "";
+            if (string.IsNullOrWhiteSpace(value)) continue;
+            var chip = FilterChip($"{dimension.Name} : {value}"); chip.Margin = new Padding(0, S(3), 0, S(3)); chip.MaximumSize = new Size(headlineContentWidth, 0); tagChips.Add(chip);
+        }
+        var tagHeight = Math.Max(S(38), tagChips.Sum(chip => chip.PreferredSize.Height + chip.Margin.Vertical));
+        var firstHeight = S(104) + titleMeasure.Height + S(16) + tagHeight;
+        var first = new TableLayoutPanel { ColumnCount = 2, Width = sectionWidth, Height = firstHeight, Margin = Padding.Empty, BackColor = page.BackColor };
+        first.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, imageColumnWidth)); first.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, headlineWidth));
+        var coverHeight = firstHeight; var coverWidth = coverHeight * 3 / 4;
+        var coverHost = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = page.BackColor };
+        coverHost.Controls.Add(new PictureBox { Width = coverWidth, Height = coverHeight, Left = (imageColumnWidth - coverWidth) / 2, Top = firstHeight - coverHeight, SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), AccessibleName = "Cover" });
+        first.Controls.Add(coverHost, 0, 0);
+        var headline = new TableLayoutPanel { ColumnCount = 1, RowCount = 3, Dock = DockStyle.Fill, Margin = new Padding(S(20), 0, 0, 0), BackColor = page.BackColor };
+        headline.RowStyles.Add(new RowStyle(SizeType.Absolute, S(104))); headline.RowStyles.Add(new RowStyle(SizeType.Absolute, titleMeasure.Height + S(16))); headline.RowStyles.Add(new RowStyle(SizeType.Absolute, tagHeight));
+        var numberAndLaunch = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = page.BackColor };
+        numberAndLaunch.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); numberAndLaunch.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        numberAndLaunch.Controls.Add(new Label { Text = $"#{game.Id}", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Font = new Font(Font.FontFamily, S(42), FontStyle.Bold), ForeColor = Color.White }, 0, 0);
+        var running = _processTracker.RefreshGameState(game);
+        if (running || gameValid)
+        {
+            var launch = CreateIconButton(running ? "■" : "▶", running ? "Stop game" : "Launch game", (_, _) => ToggleGameProcess(game));
+            launch.Anchor = AnchorStyles.None; launch.Width = S(132); launch.Height = S(92); launch.Font = new Font("Segoe UI Symbol", S(36), FontStyle.Bold);
+            if (running) { launch.BackColor = Color.FromArgb(76, 145, 217); launch.FlatAppearance.BorderColor = Color.FromArgb(133, 190, 244); }
+            numberAndLaunch.Controls.Add(launch, 1, 0);
+        }
+        headline.Controls.Add(numberAndLaunch, 0, 0);
+        headline.Controls.Add(new Label { Text = game.Title, AutoSize = true, MaximumSize = new Size(headlineContentWidth, 0), Font = titleFont, ForeColor = Color.White, Margin = new Padding(0, S(8), 0, S(8)) }, 0, 1);
+        var tags = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = false, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = Padding.Empty, BackColor = page.BackColor };
+        foreach (var chip in tagChips) tags.Controls.Add(chip);
+        headline.Controls.Add(tags, 0, 2); first.Controls.Add(headline, 1, 0);
+
+        // Section 2: an equal 2A/2B split, with the two lamps horizontally sharing 2B.
+        var noteText = string.IsNullOrWhiteSpace(game.Note) ? " " : game.Note;
+        using var noteFont = new Font(Font.FontFamily, S(22), FontStyle.Bold);
+        var secondHeight = Math.Max(S(170), TextRenderer.MeasureText(noteText, noteFont, new Size(sectionWidth / 2 - S(28), 0), TextFormatFlags.WordBreak).Height + S(48));
+        var second = new TableLayoutPanel { ColumnCount = 2, Width = sectionWidth, Height = secondHeight, Margin = new Padding(0, S(18), 0, S(18)), BackColor = page.BackColor };
+        second.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); second.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        second.Controls.Add(new Label { Text = noteText, Dock = DockStyle.Fill, Padding = new Padding(0, S(20), S(18), 0), Font = new Font(Font.FontFamily, S(22), FontStyle.Bold), ForeColor = Color.White, AccessibleName = "Note" }, 0, 0);
+        var lights = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Fill, Margin = new Padding(S(18), S(18), 0, S(18)), BackColor = page.BackColor };
+        lights.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); lights.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        var playLight = StatusBlock(StatusKind.Play, game.PlayStatusId, Rectangle.Empty, (_, e) => HandlePlayStatusClick(game, e)); playLight.Dock = DockStyle.Fill; playLight.Margin = new Padding(0, 0, S(6), 0);
+        var gameLight = StatusBlock(StatusKind.Game, game.GameStatusId, Rectangle.Empty); gameLight.Dock = DockStyle.Fill; gameLight.Margin = new Padding(S(6), 0, 0, 0);
+        lights.Controls.Add(playLight, 0, 0); lights.Controls.Add(gameLight, 1, 0);
+        second.Controls.Add(lights, 1, 0);
+
+        // Section 3 uses the same full width as sections 1 and 2.
+        var metadata = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, Width = sectionWidth, AutoSize = true, WrapContents = false, Padding = new Padding(0, S(16), 0, 0), BackColor = page.BackColor };
+        metadata.Controls.Add(PathLink("Game: " + (string.IsNullOrEmpty(game.GamePath) ? _t["none"] : game.GamePath), gamePath, gameValid, sectionWidth));
+        metadata.Controls.Add(DetailLabel("Save root: " + _store.SaveRootName(game.SaveRootId), sectionWidth));
+        metadata.Controls.Add(PathLink("Save: " + (string.IsNullOrEmpty(game.SavePath) ? _t["none"] : game.SavePath), savePath, saveValid, sectionWidth));
+        metadata.Controls.Add(DetailLabel("Region: " + RegionAlias(game.RegionCommandId), sectionWidth));
+        var export = CreateIconButton("⇩", "Export game", (_, _) => ExportGame(game)); export.Margin = new Padding(0, S(28), 0, 0); metadata.Controls.Add(export);
+
+        page.RowStyles.Add(new RowStyle(SizeType.Absolute, firstHeight)); page.RowStyles.Add(new RowStyle(SizeType.Absolute, secondHeight + S(36))); page.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        page.Controls.Add(first, 0, 0); page.Controls.Add(second, 0, 1); page.Controls.Add(metadata, 0, 2); page.PerformLayout();
+        page.Height = firstHeight + secondHeight + metadata.PreferredSize.Height + S(84); holder.Height = page.Height; holder.Controls.Add(page); _content.Controls.Add(holder); EnableWheelScroll(page);
+    }
+    private void HandlePlayStatusClick(GameEntry game, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        var now = DateTime.UtcNow;
+        if (_playStatusClicks.TryGetValue(game.Id, out var previous) && now - previous <= TimeSpan.FromSeconds(.8))
+        {
+            _playStatusClicks.Remove(game.Id); _store.SetNextPlayStatus(game.Id); ShowDetail(); return;
+        }
+        _playStatusClicks[game.Id] = now;
+    }
+    private Label DetailLabel(string text, int? maximumWidth = null) => new() { Text = text, AutoSize = true, MaximumSize = new Size(maximumWidth ?? Math.Max(S(420), _content.ClientSize.Width - S(100)), 0), Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black, Margin = new Padding(0, S(8), 0, S(8)) };
+    private Label PathLink(string label, string path, bool valid, int? maximumWidth = null)
+    {
+        var availableWidth = maximumWidth ?? Math.Max(S(420), _content.ClientSize.Width - _content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - S(24));
         var displayLabel = WrapPathLabel(label, Math.Clamp(availableWidth / Math.Max(S(10), 12), 36, 72));
         var link = new Label { Text = displayLabel, AutoSize = true, MaximumSize = new Size(availableWidth, 0), AccessibleName = label, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = valid ? Color.FromArgb(161, 226, 174) : Color.FromArgb(255, 94, 94), Cursor = valid ? Cursors.Hand : Cursors.Default, Margin = new Padding(0, S(8), 0, S(8)) };
         link.Click += (_, _) => { if (File.Exists(path)) Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true }); else if (Directory.Exists(path)) Process.Start(new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true }); };
@@ -652,12 +868,11 @@ public sealed class MainForm : Form
         var saveRoot = ChoiceCombo(_store.Data.SaveRoots.Select(root => new Selection<int>(root.Id, root.Name)).ToList(), draft.SaveRootId); Row("Save root", saveRoot, () => SelectChoice(saveRoot, Defaults.SaveRootGameDirectoryId));
         var gamePick = CreateIconButton("▣", "Choose game executable", (_, _) => { using var d = new OpenFileDialog { Filter = "Executable (*.exe)|*.exe" }; if (d.ShowDialog() == DialogResult.OK) { try { gamePath.Text = _store.ToRcRelativePath(d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }); var gamePanel = new FlowLayoutPanel(); gamePanel.Controls.Add(gamePath); gamePanel.Controls.Add(gamePick); Row("Game path (relative to rc)", gamePanel, () => gamePath.Text = "");
         var savePath = new TextBox { Text = draft.SavePath, ReadOnly = true, Width = 450 }; var savePick = CreateIconButton("▣", "Choose save file", (_, _) => { using var d = new OpenFileDialog(); if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }); var saveFolder = CreateIconButton("▤", "Choose save folder", (_, _) => { using var d = new FolderBrowserDialog(); if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.SelectedPath); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }); var savePanel = new FlowLayoutPanel(); savePanel.Controls.Add(savePath); savePanel.Controls.Add(savePick); savePanel.Controls.Add(saveFolder); Row("Save path (relative)", savePanel, () => savePath.Text = "");
-        var play = StatusCombo(_store.Data.PlayStatuses, draft.PlayStatusId); Row("Play status", play, () => SelectChoice(play, Defaults.PlayDefaultId));
         var state = StatusCombo(_store.Data.GameStatuses, draft.GameStatusId); Row("Game status", state, () => SelectChoice(state, Defaults.GameDefaultId));
         var regionChoices = _store.Data.RegionCommands.Keys.OrderBy(id => id).Select(id => new Selection<int>(id, RegionAlias(id))).ToList(); var region = ChoiceCombo(regionChoices, draft.RegionCommandId); Row("Region command", region, () => SelectChoice(region, 0));
         for (var i = 0; i < _store.Data.TagSchema.Count; i++) { var pos = i; var dim = _store.Data.TagSchema[i]; var tag = ChoiceCombo(dim.Values.OrderBy(x => x.Key).Select(x => new Selection<int>(x.Key, x.Value)).ToList(), draft.Tags[i]); Row(dim.Name, tag, () => SelectChoice(tag, 0)); tag.Tag = pos; }
         var imageButton = CreateIconButton("▣", _t["Choose image"], (_, _) => { using var dialog = new OpenFileDialog { Filter = "Images (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg" }; if (dialog.ShowDialog() == DialogResult.OK) { try { _store.SetImage(draft.Id, dialog.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } } });
-        var applySave = CreateIconButton("✓", "Save game", (_, _) => { try { draft.Title = title.Text; draft.Note = note.Text; draft.GamePath = gamePath.Text; draft.SavePath = savePath.Text; draft.SaveRootId = ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId); draft.PlayStatusId = ChoiceId(play, Defaults.PlayDefaultId); draft.GameStatusId = ChoiceId(state, Defaults.GameDefaultId); draft.RegionCommandId = ChoiceId(region, 0); foreach (var combo in Descendants(form).OfType<ComboBox>()) if (combo.Tag is int tagPos) draft.Tags[tagPos] = ChoiceId(combo, 0); _store.UpdateGame(draft); ShowDetail(); } catch (Exception ex) { MessageBox.Show(ex.Message); } });
+        var applySave = CreateIconButton("✓", "Save game", (_, _) => { try { draft.Title = title.Text; draft.Note = note.Text; draft.GamePath = gamePath.Text; draft.SavePath = savePath.Text; draft.SaveRootId = ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId); draft.GameStatusId = ChoiceId(state, Defaults.GameDefaultId); draft.RegionCommandId = ChoiceId(region, 0); foreach (var combo in Descendants(form).OfType<ComboBox>()) if (combo.Tag is int tagPos) draft.Tags[tagPos] = ChoiceId(combo, 0); _store.UpdateGame(draft); ShowDetail(); } catch (Exception ex) { MessageBox.Show(ex.Message); } });
         var preview = new PictureBox { Left = S(20), Top = S(20), Width = S(220), Height = S(293), SizeMode = PictureBoxSizeMode.StretchImage, Image = LoadImage(_store.GetGame(draft.Id)), BorderStyle = BorderStyle.FixedSingle, AccessibleName = "Current cover" };
         var cropImageButton = CreateIconButton("✂", "Choose and crop cover", (_, _) => { using var dialog = new OpenFileDialog { Filter = "Images (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg" }; if (dialog.ShowDialog() != DialogResult.OK) return; try { if (SelectAndSaveCover(draft.Id, dialog.FileName)) { preview.Image?.Dispose(); preview.Image = LoadImage(_store.GetGame(draft.Id)); } } catch (Exception ex) { MessageBox.Show(ex.Message); } });
         var actions = new Panel { Width = form.Width, Height = S(345), BackColor = form.BackColor }; actions.Controls.Add(preview); cropImageButton.Location = new Point(S(270), S(34)); applySave.Location = new Point(S(376), S(34)); actions.Controls.Add(cropImageButton); actions.Controls.Add(applySave);
@@ -716,7 +931,7 @@ public sealed class MainForm : Form
     private static IEnumerable<Control> Descendants(Control parent) => parent.Controls.Cast<Control>().SelectMany(child => new[] { child }.Concat(Descendants(child)));
     private ComboBox ChoiceCombo(IReadOnlyList<Selection<int>> choices, int selectedId)
     {
-        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, DisplayMember = "Text", ValueMember = "Value" };
+        var combo = new ScrollSafeComboBox { DropDownStyle = ComboBoxStyle.DropDownList, DisplayMember = "Text", ValueMember = "Value", WheelScrollRequested = ScrollContentByWheel };
         combo.Items.AddRange(choices.Cast<object>().ToArray()); SelectChoice(combo, selectedId); return combo;
     }
     private static void SelectChoice(ComboBox combo, int id)
@@ -744,6 +959,7 @@ public sealed class MainForm : Form
         stack.Controls.Add(ArraySection(_t["Region commands"], _store.Data.RegionCommands.Keys.Where(id => id != 0).Select(id => (id, RegionAlias(id))), "＋", AddRegionTile, RegionContext));
         stack.Controls.Add(ArraySection("Play " + _t["Statuses"], _store.Data.PlayStatuses.Select(x => (x.Id, x.Name)), "＋", () => AddStatusTile(StatusKind.Play), id => StatusContext(StatusKind.Play, id)));
         stack.Controls.Add(ArraySection("Game " + _t["Statuses"], _store.Data.GameStatuses.Select(x => (x.Id, x.Name)), "＋", () => AddStatusTile(StatusKind.Game), id => StatusContext(StatusKind.Game, id)));
+        stack.Controls.Add(ButtonIconSection());
         stack.Controls.Add(TagVectorSection());
         _content.Controls.Add(stack); EnableWheelScroll(stack);
     }
@@ -795,6 +1011,29 @@ public sealed class MainForm : Form
         foreach (var item in values) tiles.Controls.Add(ElementTile(item.text, false, () => { }, menu(item.id)));
         tiles.Controls.Add(ElementTile(addGlyph, true, add, null)); section.Controls.Add(tiles); EnableWheelScroll(tiles); return section;
     }
+    private static readonly (string Key, string Name, string Glyph)[] ButtonIconCatalog =
+    [
+        ("glyph:⌂", "Library", "⌂"), ("glyph:✎", "Edit", "✎"), ("glyph:←", "Back / cancel", "←"), ("glyph:＋", "Add", "＋"),
+        ("glyph:⇧", "Import", "⇧"), ("glyph:⇩", "Export", "⇩"), ("glyph:✓", "Save / confirm", "✓"), ("glyph:×", "Delete / clear", "×"),
+        ("glyph:▣", "Choose file", "▣"), ("glyph:▤", "Choose folder", "▤"), ("glyph:✂", "Crop cover", "✂"), ("glyph:↻", "Reset", "↻"),
+        ("glyph:▶", "Launch game", "▶"), ("glyph:■", "Stop game", "■"), ("glyph:☷", "Library dimensions", "☷"), ("filter", "Filter", "")
+    ];
+    private Control ButtonIconSection()
+    {
+        return ArraySection("Button icons", ButtonIconCatalog.Select((item, index) => (index, item.Name)), "↻", () => { _store.Data.Settings.ButtonIcons.Clear(); _store.Save(); ShowGlobal(); }, ButtonIconContext);
+    }
+    private ContextMenuStrip? ButtonIconContext(int index)
+    {
+        var item = ButtonIconCatalog[index]; var menu = new ContextMenuStrip();
+        menu.Items.Add("Edit", null, (_, _) =>
+        {
+            _store.Data.Settings.ButtonIcons.TryGetValue(item.Key, out var current);
+            var vector = EditStatusIcon(current ?? "", ColorTranslator.ToHtml(ButtonColor(item.Glyph, IsDarkTheme))); if (vector is null) return;
+            _store.Data.Settings.ButtonIcons[item.Key] = vector; _store.Save(); ShowGlobal();
+        });
+        if (_store.Data.Settings.ButtonIcons.ContainsKey(item.Key)) menu.Items.Add("Restore glyph", null, (_, _) => { _store.Data.Settings.ButtonIcons.Remove(item.Key); _store.Save(); ShowGlobal(); });
+        return menu;
+    }
     private Panel ElementTile(string text, bool add, Action click, ContextMenuStrip? context)
     {
         var tile = new Panel { Width = S(176), Height = S(128), Margin = new Padding(S(12)), BackColor = add ? (IsDarkTheme ? Color.FromArgb(43, 133, 91) : Color.FromArgb(47, 157, 100)) : (IsDarkTheme ? Color.FromArgb(52, 61, 62) : Color.FromArgb(255, 232, 179)), Cursor = Cursors.Hand, AccessibleName = add ? "Add" : text };
@@ -836,16 +1075,16 @@ public sealed class MainForm : Form
     }
     private string? EditStatusIcon(string vector, string color)
     {
-        using var dialog = new Form { Text = "Status vector editor", StartPosition = FormStartPosition.CenterParent, Size = new Size(760, 610), MinimumSize = new Size(680, 540), BackColor = Color.FromArgb(35, 38, 39), ForeColor = Color.White, Font = Font };
+        using var dialog = new Form { Text = "Vector icon editor", StartPosition = FormStartPosition.CenterParent, Size = new Size(760, 610), MinimumSize = new Size(680, 540), BackColor = Color.FromArgb(35, 38, 39), ForeColor = Color.White, Font = Font };
         var canvas = new StatusIconCanvas(StatusColorValue(color), vector) { Left = 30, Top = 32, Width = 390, Height = 390, AccessibleName = "Status icon drawing canvas" };
-        var help = new Label { Left = 455, Top = 32, Width = 255, Height = 85, Text = "Draw only white vector strokes or white filled shapes.\nChoose a tool, then drag on the coloured canvas.", Font = new Font(Font.FontFamily, 12, FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
+        var help = new Label { Left = 455, Top = 32, Width = 255, Height = 85, Text = "Draw white vectors. The fill tool stores a seed point and fills its enclosed region using all white shapes as boundaries.", Font = new Font(Font.FontFamily, 12, FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
         var tools = new FlowLayoutPanel { Left = 450, Top = 125, Width = 270, Height = 230, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, BackColor = dialog.BackColor };
         Button ToolButton(string text, string tool)
         {
             var button = new Button { Text = text, Width = 124, Height = 46, Margin = new Padding(5), FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false, BackColor = Color.FromArgb(45, 119, 115), ForeColor = Color.White, Font = new Font(Font.FontFamily, 10, FontStyle.Bold) };
             button.FlatAppearance.BorderColor = Color.FromArgb(181, 228, 245); button.Click += (_, _) => canvas.Tool = tool; return button;
         }
-        tools.Controls.AddRange([ToolButton("Line", "line"), ToolButton("Outline circle", "ellipse"), ToolButton("Filled circle", "ellipse-fill"), ToolButton("Outline square", "rectangle"), ToolButton("Filled square", "rectangle-fill"), ToolButton("Outline cloud", "cloud")]);
+        tools.Controls.AddRange([ToolButton("Line", "line"), ToolButton("Straight line", "straight"), ToolButton("Hollow circle", "ellipse"), ToolButton("Hollow triangle", "triangle"), ToolButton("Hollow rectangle", "rectangle"), ToolButton("Fill enclosed region", "flood")]);
         var clear = CreateIconButton("×", "Clear vector canvas", (_, _) => canvas.Clear()); clear.Left = 450; clear.Top = 380;
         var save = CreateIconButton("✓", "Save status icon", (_, _) => dialog.DialogResult = DialogResult.OK); save.Left = 556; save.Top = 380;
         var cancel = CreateIconButton("←", "Cancel", (_, _) => dialog.DialogResult = DialogResult.Cancel); cancel.Left = 662; cancel.Top = 380;
@@ -861,8 +1100,15 @@ public sealed class MainForm : Form
     private ContextMenuStrip? StatusContext(StatusKind kind, int id)
     {
         var item = (kind == StatusKind.Play ? _store.Data.PlayStatuses : _store.Data.GameStatuses).Single(x => x.Id == id);
-        var menu = new ContextMenuStrip(); menu.Items.Add("Edit", null, (_, _) => { var name = Prompt("Status name", item.Name); if (name is null) return; var color = PromptRgb(item.Color); if (color is null) return; var icon = EditStatusIcon(item.IconVector, color); if (icon is null) return; try { _store.UpdateStatus(kind, id, name, color, icon); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } });
-        if ((kind == StatusKind.Play ? _store.Data.PlayStatuses : _store.Data.GameStatuses).Count > 1) menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) == DialogResult.Yes) { try { _store.DeleteStatus(kind, id); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } } });
+        var systemGameStatus = kind == StatusKind.Game && !string.IsNullOrWhiteSpace(item.SystemRole);
+        var menu = new ContextMenuStrip(); menu.Items.Add("Edit", null, (_, _) => { var name = Prompt("Status name", item.Name); if (name is null) return; var color = systemGameStatus ? item.Color : PromptRgb(item.Color); if (color is null) return; var icon = EditStatusIcon(item.IconVector, color); if (icon is null) return; try { _store.UpdateStatus(kind, id, name, color, icon); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } });
+        if (kind == StatusKind.Play)
+        {
+            var index = _store.Data.PlayStatuses.FindIndex(status => status.Id == id);
+            if (index > 0) menu.Items.Add("Move earlier", null, (_, _) => { _store.MovePlayStatus(id, -1); ShowGlobal(); });
+            if (index < _store.Data.PlayStatuses.Count - 1) menu.Items.Add("Move later", null, (_, _) => { _store.MovePlayStatus(id, 1); ShowGlobal(); });
+        }
+        if (!systemGameStatus && (kind == StatusKind.Play ? _store.Data.PlayStatuses : _store.Data.GameStatuses).Count > 1) menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) == DialogResult.Yes) { try { _store.DeleteStatus(kind, id); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } } });
         return menu;
     }
     private Control TagVectorSection()
@@ -995,6 +1241,25 @@ public sealed class MainForm : Form
 public sealed record Selection<T>(T Value, string Text)
 {
     public override string ToString() => Text;
+}
+
+/// <summary>Prevents a closed native ComboBox from consuming the page scroll wheel.</summary>
+public sealed class ScrollSafeComboBox : ComboBox
+{
+    [System.ComponentModel.Browsable(false)]
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public Action<int>? WheelScrollRequested { get; set; }
+    protected override void WndProc(ref Message m)
+    {
+        const int WmMouseWheel = 0x20A;
+        if (m.Msg == WmMouseWheel && !DroppedDown)
+        {
+            var delta = (short)(((long)m.WParam >> 16) & 0xffff);
+            WheelScrollRequested?.Invoke(delta);
+            return;
+        }
+        base.WndProc(ref m);
+    }
 }
 
 public static class CommandLine
