@@ -22,6 +22,10 @@ public sealed class MainForm : Form
     private FormBorderStyle _restoreBorderStyle = FormBorderStyle.Sizable;
     private readonly Dictionary<int, DateTime> _playStatusClicks = [];
     private readonly System.Windows.Forms.Timer _resizeLayoutTimer = new() { Interval = 33 };
+    // FormBorderStyle/WindowState changes emit Resize but not ResizeEnd.  Suppress
+    // the drag-resize timer around those programmatic transitions so it cannot keep
+    // rebuilding the page indefinitely after F11.
+    private bool _suppressResizeLayout;
 
     public MainForm(DataStore store)
     {
@@ -32,8 +36,8 @@ public sealed class MainForm : Form
         _management = false;
         if (_selectedId is not null && store.Data.Games.Any(game => game.Id == _selectedId) && store.Data.Settings.Page is "detail" or "edit") ShowDetail(); else { _selectedId = null; ShowLibrary(); }
         KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => { _resizeLayoutTimer.Stop(); _processTracker.Dispose(); };
-        _resizeLayoutTimer.Tick += (_, _) => { if (!IsDisposed && WindowState != FormWindowState.Minimized) RefreshResponsiveLayout(); };
-        ResizeEnd += (_, _) => { _resizeLayoutTimer.Stop(); EnforceAspect(); RefreshResponsiveLayout(); }; Resize += (_, _) => QueueResponsiveLayout();
+        _resizeLayoutTimer.Tick += (_, _) => { if (!IsDisposed && !_suppressResizeLayout && WindowState != FormWindowState.Minimized) RefreshResponsiveLayout(); };
+        ResizeEnd += (_, _) => { if (_suppressResizeLayout) return; _resizeLayoutTimer.Stop(); EnforceAspect(); RefreshResponsiveLayout(); }; Resize += (_, _) => QueueResponsiveLayout();
         _processTracker.StateChanged += (_, e) =>
         {
             if (IsDisposed || !IsHandleCreated) return;
@@ -70,8 +74,42 @@ public sealed class MainForm : Form
 
     private void ToggleFullscreen()
     {
-        if (!_fullScreen) { _restoreBounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds; _restoreBorderStyle = FormBorderStyle; FormBorderStyle = FormBorderStyle.None; WindowState = FormWindowState.Maximized; _fullScreen = true; }
-        else { WindowState = FormWindowState.Normal; FormBorderStyle = _restoreBorderStyle; Bounds = _restoreBounds; _fullScreen = false; }
+        var entering = !_fullScreen;
+        _resizeLayoutTimer.Stop();
+        _suppressResizeLayout = true;
+        AppLog.Debug("UI", entering ? "Entering fullscreen; drag-resize layout scheduling is suspended." : "Leaving fullscreen; drag-resize layout scheduling is suspended.");
+        try
+        {
+            if (entering)
+            {
+                _restoreBounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+                _restoreBorderStyle = FormBorderStyle;
+                // Set this first so native messages produced by the transition are
+                // consistently treated as fullscreen messages.
+                _fullScreen = true;
+                FormBorderStyle = FormBorderStyle.None;
+                WindowState = FormWindowState.Maximized;
+            }
+            else
+            {
+                WindowState = FormWindowState.Normal;
+                FormBorderStyle = _restoreBorderStyle;
+                Bounds = _restoreBounds;
+                _fullScreen = false;
+            }
+        }
+        finally { _suppressResizeLayout = false; }
+
+        // Programmatic resizes do not raise ResizeEnd.  Queue exactly one rebuild
+        // after Windows has committed the final client size.
+        if (!IsHandleCreated) return;
+        BeginInvoke((Action)(() =>
+        {
+            if (IsDisposed) return;
+            _resizeLayoutTimer.Stop();
+            RefreshResponsiveLayout();
+            AppLog.Debug("UI", $"Fullscreen transition completed; refreshed '{_page}' once at {ClientSize.Width}x{ClientSize.Height}.");
+        }));
     }
     private void EnforceAspect() { if (WindowState == FormWindowState.Normal && !_fullScreen && Width > 0) Height = Math.Max(MinimumSize.Height, (int)Math.Round(Width * 9d / 16d)); }
 
@@ -383,7 +421,7 @@ public sealed class MainForm : Form
     }
     private void QueueResponsiveLayout()
     {
-        if (IsDisposed || WindowState == FormWindowState.Minimized || ClientSize.Width < 100) return;
+        if (IsDisposed || _suppressResizeLayout || WindowState == FormWindowState.Minimized || ClientSize.Width < 100) return;
         if (!_resizeLayoutTimer.Enabled) _resizeLayoutTimer.Start();
     }
     private void CenterEditLayout()

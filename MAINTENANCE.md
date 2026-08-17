@@ -1,8 +1,13 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.0a` (alpha)
+**Current application patch:** `2.0.0a1` (alpha)
 
 ## Patch history
+
+### 2.0.0a1 (alpha)
+
+- Fixed continuous fullscreen flashing after `F11`. Changing `FormBorderStyle` and `WindowState` programmatically raises `Resize` but does not raise `ResizeEnd`; the prior resize-throttling timer could therefore remain active and rebuild the complete page every 33 ms. Fullscreen transitions now suspend that timer, ignore their intermediate resize events, and perform exactly one responsive layout refresh after Windows commits the final client size.
+- Debug logs now record the start and completion of each fullscreen transition, including the final client size and page, so a later resize-loop report can be diagnosed directly from `log/gameshelf-YYYY-MM-DD.log`.
 
 ### 2.0.0a (alpha)
 
