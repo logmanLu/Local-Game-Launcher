@@ -1,8 +1,12 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.0a2` (alpha)
+**Current application patch:** `2.0.0a3` (alpha)
 
 ## Patch history
+
+### 2.0.0a3 (alpha)
+
+- Corrected the detail Section 1 sizing rule: its right half now expands to the full measured height of the number, title, and every one-per-line tag, with no internal tag scrollbar. The 3:4 cover directly follows that resulting height rather than limiting the right-side content to the cover column's maximum height.
 
 ### 2.0.0a2 (alpha)
 
