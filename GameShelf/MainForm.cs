@@ -36,6 +36,15 @@ public sealed class MainForm : Form
         _management = false;
         if (_selectedId is not null && store.Data.Games.Any(game => game.Id == _selectedId) && store.Data.Settings.Page is "detail" or "edit") ShowDetail(); else { _selectedId = null; ShowLibrary(); }
         KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => { _resizeLayoutTimer.Stop(); _processTracker.Dispose(); };
+        Shown += (_, _) =>
+        {
+            if (!_fullScreen) return;
+            // RestoreWindow runs before the native form handle exists, so its
+            // fullscreen transition cannot queue the usual post-transition refresh.
+            _resizeLayoutTimer.Stop();
+            RefreshResponsiveLayout();
+            AppLog.Debug("UI", $"Restored fullscreen on first show; refreshed '{_page}' once at {ClientSize.Width}x{ClientSize.Height}.");
+        };
         _resizeLayoutTimer.Tick += (_, _) => { if (!IsDisposed && !_suppressResizeLayout && WindowState != FormWindowState.Minimized) RefreshResponsiveLayout(); };
         ResizeEnd += (_, _) => { if (_suppressResizeLayout) return; _resizeLayoutTimer.Stop(); EnforceAspect(); RefreshResponsiveLayout(); }; Resize += (_, _) => QueueResponsiveLayout();
         _processTracker.StateChanged += (_, e) =>
@@ -422,7 +431,9 @@ public sealed class MainForm : Form
     }
     private void QueueResponsiveLayout()
     {
-        if (IsDisposed || _suppressResizeLayout || WindowState == FormWindowState.Minimized || ClientSize.Width < 100) return;
+        // ResizeEnd is not sent for fullscreen/maximize transitions.  Fullscreen
+        // performs its own one-shot refresh, never the interactive drag timer.
+        if (IsDisposed || _suppressResizeLayout || _fullScreen || WindowState == FormWindowState.Minimized || ClientSize.Width < 100) return;
         if (!_resizeLayoutTimer.Enabled) _resizeLayoutTimer.Start();
     }
     private void CenterEditLayout()

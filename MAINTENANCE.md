@@ -1,8 +1,12 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.0a3` (alpha)
+**Current application patch:** `2.0.0a4` (alpha)
 
 ## Patch history
+
+### 2.0.0a4 (alpha)
+
+- Fixed the remaining fullscreen flashing path when the launcher is closed while fullscreen and later restored fullscreen. During construction, the original fullscreen transition occurs before a native form handle exists, so its post-transition callback cannot run; Windows then sends resize notifications after the normal resize handler is attached. Fullscreen resize notifications are now excluded from the interactive drag-layout timer, and the `Shown` event performs one explicit first-show layout refresh with a diagnostic log entry.
 
 ### 2.0.0a3 (alpha)
 
