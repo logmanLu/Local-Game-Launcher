@@ -1,8 +1,20 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `1.3`
+**Current application patch:** `1.4`
 
 ## Patch history
+
+### 1.4
+
+- Stable release of the new diagnostic logging system, distinguishing it from 1.3. GameShelf now records operational diagnostics in `log/gameshelf-YYYY-MM-DD.log` next to the executable and automatically removes its own logs older than 30 days.
+- Stable builds default to the `Information` threshold; `GAMESHELF_LOG_LEVEL` may raise detail temporarily for investigation without rebuilding.
+
+### 1.4.0a (alpha)
+
+- Added daily rolling diagnostic logs in `log/` next to the executable. Log files use `gameshelf-YYYY-MM-DD.log` and startup deletes GameShelf log files older than 30 days.
+- Added `Trace`, `Debug`, `Information`, `Warning`, `Error`, and `Critical` levels. Alpha versions (an `a` suffix) default to `Debug`, while stable versions without that suffix default to `Information`. Set `GAMESHELF_LOG_LEVEL` to any level name (for example `Debug` or `Trace`) before starting the application to override that minimum.
+- Startup, persistence, process tracking, launch/stop operations, and unhandled exceptions now emit diagnostic events. Log write failures are deliberately ignored so an unavailable log directory cannot prevent GameShelf from running.
+- Local shortcut policy: `Launcher.exe` is the fixed launch target. Each new build replaces that file first, then copies it to `Launcher_<version>.exe` for a versioned release asset. Existing shortcuts only need to be changed once to point to `Launcher.exe`.
 
 ### 1.3
 
@@ -52,7 +64,7 @@
 
 - GameShelf now tracks registered game executables without periodic polling. It makes one recovery scan at startup, then attaches to `Process.Exited` for each matched game and uses the Windows WMI process-start event to detect games created by a region launcher.
 - On a game detail page, a tracked running game changes the launch button into a blue stop button. Stop sends the game's normal window-close request; the button changes back only when Windows reports that the game process actually exited.
-- Restarting GameShelf while a registered game is running reattaches to the matching executable and continues to receive its exit event. If the Windows WMI service is unavailable, direct launches and already-running recovered games still work through `Process.Exited`; region-launcher child-process discovery is logged in `savedata/errors.log` as unavailable.
+- Restarting GameShelf while a registered game is running reattaches to the matching executable and continues to receive its exit event. If the Windows WMI service is unavailable, direct launches and already-running recovered games still work through `Process.Exited`; region-launcher child-process diagnostics are recorded in `log/`.
 
 ### 1.1.0a
 
@@ -87,7 +99,8 @@ GameShelf.exe
 savedata/
   gameshelf.json       # UTF-8 JSON database
   images/              # managed PNG covers
-  errors.log           # append-only runtime/storage errors, when present
+log/
+  gameshelf-YYYY-MM-DD.log # daily diagnostic log; retained for 30 days
 ```
 
 Copy both `GameShelf.exe` and `savedata/` to migrate an existing library. Copying only the executable starts an empty library.
@@ -190,7 +203,7 @@ Each management section grows only enough to contain its tiles. The overall page
 2. **A selector shows the wrong value:** compare the relevant game ID field with the available status/region/tag IDs in JSON. The edit page uses direct choice items; an invalid ID is normalized to a default/`none` value on startup.
 3. **A game does not launch:** verify `RcRootPath`, then combine it with the game's relative `GamePath` and verify the resulting executable works when double-clicked. GameShelf uses the EXE directory as working directory. For a region command, check the stored command line and its executable/arguments.
 4. **A save path is missing after moving machines:** verify its `SaveRootId` points to the intended `SaveRoots` entry and that the root's template expands correctly for the current user. If the game's resources moved, update only `RcRootPath`.
-5. **Data cannot save:** ensure the folder containing `GameShelf.exe` and its `savedata` subfolder are writable; inspect `savedata/errors.log`.
+5. **Data cannot save:** ensure the folder containing `GameShelf.exe` and its `savedata` subfolder are writable; inspect the newest file in `log/`.
 6. **Migration or backup:** close GameShelf first, then copy `GameShelf.exe` and the full `savedata/` tree. Do not edit JSON while the application is running.
 7. **A running game is not detected:** confirm the registered executable is the actual process rather than only a launcher. Opening its detail page asks Windows once for every accessible process's full image path; if the configured EXE is not the process that remains alive, choose the remaining game EXE as the game path or inspect the launcher/child-process note in the patch history. GameShelf performs no repeated scan by design.
 

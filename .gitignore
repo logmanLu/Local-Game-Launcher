@@ -1,6 +1,7 @@
 # User data and distributable output
 savedata/
 publish/
+log/
 *.gspkg
 
 # .NET build output and local SDK/cache state

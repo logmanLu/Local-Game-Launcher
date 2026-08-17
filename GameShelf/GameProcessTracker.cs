@@ -23,17 +23,19 @@ public sealed class GameProcessTracker : IDisposable
 
     public void Start()
     {
+        AppLog.Information("ProcessTracker", "Starting game process tracking.");
         RecoverExistingProcesses();
         try
         {
             _startWatcher = new ManagementEventWatcher(new WqlEventQuery("SELECT * FROM Win32_ProcessStartTrace"));
             _startWatcher.EventArrived += ProcessStarted;
             _startWatcher.Start();
+            AppLog.Information("ProcessTracker", "Windows process-start event watcher is active.");
         }
         catch (Exception ex)
         {
             // Direct launches and recovered processes still use Process.Exited if WMI is unavailable.
-            _store.Log("Process-start event watcher could not start: " + ex.Message);
+            AppLog.Warning("ProcessTracker", "Process-start event watcher could not start; direct tracking remains available.", ex);
             _startWatcher?.Dispose();
             _startWatcher = null;
         }
@@ -83,9 +85,11 @@ public sealed class GameProcessTracker : IDisposable
         {
             // This posts WM_CLOSE to a graphical game. State returns to Play only after its real exit event.
             if (!process.CloseMainWindow()) throw new InvalidOperationException("The game does not currently expose a window that can receive a close request.");
+            AppLog.Information("ProcessTracker", $"Requested normal close for game {gameId}.");
         }
         catch (Exception ex)
         {
+            AppLog.Error("ProcessTracker", $"Could not request stop for game {gameId}.", ex);
             throw new InvalidOperationException("Could not request the game to stop: " + ex.Message, ex);
         }
     }
