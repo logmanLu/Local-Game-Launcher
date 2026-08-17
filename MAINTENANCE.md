@@ -1,8 +1,13 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.0a5` (alpha)
+**Current application patch:** `2.0.0`
 
 ## Patch history
+
+### 2.0.0
+
+- Stable release of the 2.0 series. It includes path-aware system game statuses, independent save-path display validation, the three-section game-detail layout, configurable Library-card dimensions, vector button/status artwork, event-driven process tracking, diagnostic logging, resize presentation masking, and protected page scrolling over closed choice boxes.
+- Stable builds default their diagnostic log threshold to `Information`; alpha builds remain `Debug` by default. The full change history and troubleshooting details remain below under the 2.0 alpha entries.
 
 ### 2.0.0a5 (alpha)
 
