@@ -11,7 +11,10 @@ public sealed class StatusIconShape
     public float Y { get; set; }
     public float Width { get; set; }
     public float Height { get; set; }
+    public List<VectorPoint> Points { get; set; } = [];
 }
+
+public sealed class VectorPoint { public float X { get; set; } public float Y { get; set; } }
 
 public static class StatusIconVectors
 {
@@ -35,10 +38,18 @@ public static class StatusIconVectors
     public static string Serialize(IEnumerable<StatusIconShape> shapes) => JsonSerializer.Serialize(shapes.Select(Clone).ToList(), Json);
     public static void Draw(Graphics graphics, Rectangle bounds, string? vector)
     {
-        var side = Math.Min(bounds.Width, bounds.Height);
-        bounds = new Rectangle(bounds.Left + (bounds.Width - side) / 2, bounds.Top + (bounds.Height - side) / 2, side, side);
         var shapes = Parse(vector);
-        foreach (var shape in shapes) DrawShape(graphics, bounds, shape);
+        var side = Math.Min(bounds.Width, bounds.Height);
+        var target = new Rectangle(bounds.Left + (bounds.Width - side) / 2, bounds.Top + (bounds.Height - side) / 2, side, side);
+        using var bitmap = new Bitmap(Math.Max(1, target.Width), Math.Max(1, target.Height));
+        using (var canvas = Graphics.FromImage(bitmap))
+        {
+            canvas.SmoothingMode = SmoothingMode.AntiAlias;
+            var local = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
+            foreach (var shape in shapes.Where(shape => shape.Type != "flood")) DrawShape(canvas, local, shape);
+            foreach (var shape in shapes.Where(shape => shape.Type == "flood")) FloodFill(bitmap, shape.X * bitmap.Width / 100f, shape.Y * bitmap.Height / 100f);
+        }
+        graphics.DrawImageUnscaled(bitmap, target.Location);
     }
     public static void DrawShape(Graphics graphics, Rectangle bounds, StatusIconShape shape)
     {
@@ -51,11 +62,20 @@ public static class StatusIconVectors
         using var brush = new SolidBrush(Color.White);
         switch (shape.Type)
         {
-            case "line": graphics.DrawLine(pen, x, y, x + width, y + height); break;
+            case "line":
+                if (shape.Points.Count >= 2)
+                {
+                    var points = shape.Points.Select(point => new PointF(bounds.Left + bounds.Width * point.X / 100f, bounds.Top + bounds.Height * point.Y / 100f)).ToArray();
+                    graphics.DrawLines(pen, points);
+                }
+                else graphics.DrawLine(pen, x, y, x + width, y + height);
+                break;
+            case "straight": graphics.DrawLine(pen, x, y, x + width, y + height); break;
             case "ellipse": graphics.DrawEllipse(pen, rect); break;
             case "ellipse-fill": graphics.FillEllipse(brush, rect); break;
             case "rectangle": graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height); break;
             case "rectangle-fill": graphics.FillRectangle(brush, rect); break;
+            case "triangle": graphics.DrawPolygon(pen, [new PointF(rect.Left + rect.Width / 2, rect.Top), new PointF(rect.Right, rect.Bottom), new PointF(rect.Left, rect.Bottom)]); break;
             case "cloud": DrawCloud(graphics, pen, rect); break;
         }
     }
@@ -68,7 +88,18 @@ public static class StatusIconVectors
         path.AddLine(rect.Right - rect.Width * .12f, rect.Bottom, rect.X + rect.Width * .18f, rect.Bottom);
         graphics.DrawPath(pen, path);
     }
-    private static StatusIconShape Clone(StatusIconShape shape) => new() { Type = shape.Type, X = shape.X, Y = shape.Y, Width = shape.Width, Height = shape.Height };
+    private static void FloodFill(Bitmap bitmap, float x, float y)
+    {
+        var startX = Math.Clamp((int)Math.Round(x), 0, bitmap.Width - 1); var startY = Math.Clamp((int)Math.Round(y), 0, bitmap.Height - 1);
+        if (bitmap.GetPixel(startX, startY).A != 0) return;
+        var queue = new Queue<Point>(); queue.Enqueue(new Point(startX, startY));
+        while (queue.Count > 0)
+        {
+            var point = queue.Dequeue(); if (point.X < 0 || point.Y < 0 || point.X >= bitmap.Width || point.Y >= bitmap.Height || bitmap.GetPixel(point.X, point.Y).A != 0) continue;
+            bitmap.SetPixel(point.X, point.Y, Color.White); queue.Enqueue(new Point(point.X - 1, point.Y)); queue.Enqueue(new Point(point.X + 1, point.Y)); queue.Enqueue(new Point(point.X, point.Y - 1)); queue.Enqueue(new Point(point.X, point.Y + 1));
+        }
+    }
+    private static StatusIconShape Clone(StatusIconShape shape) => new() { Type = shape.Type, X = shape.X, Y = shape.Y, Width = shape.Width, Height = shape.Height, Points = shape.Points.Select(point => new VectorPoint { X = point.X, Y = point.Y }).ToList() };
 }
 
 public sealed class StatusIconCanvas : Control
@@ -77,6 +108,7 @@ public sealed class StatusIconCanvas : Control
     private Point _start;
     private Point _current;
     private bool _dragging;
+    private readonly List<Point> _stroke = [];
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public string Tool { get; set; } = "line";
     public IReadOnlyList<StatusIconShape> Shapes => _shapes;
@@ -86,14 +118,15 @@ public sealed class StatusIconCanvas : Control
         _shapes = StatusIconVectors.Parse(vector); BackColor = background; DoubleBuffered = true; Cursor = Cursors.Cross;
     }
     public void Clear() { _shapes.Clear(); Invalidate(); }
-    protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { _start = e.Location; _current = e.Location; _dragging = true; Capture = true; Invalidate(); } base.OnMouseDown(e); }
-    protected override void OnMouseMove(MouseEventArgs e) { if (_dragging) { _current = e.Location; Invalidate(); } base.OnMouseMove(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { _start = e.Location; _current = e.Location; _stroke.Clear(); _stroke.Add(e.Location); _dragging = true; Capture = true; Invalidate(); } base.OnMouseDown(e); }
+    protected override void OnMouseMove(MouseEventArgs e) { if (_dragging) { _current = e.Location; if (Tool == "line" && (_stroke.Count == 0 || _stroke[^1] != e.Location)) _stroke.Add(e.Location); Invalidate(); } base.OnMouseMove(e); }
     protected override void OnMouseUp(MouseEventArgs e)
     {
         if (_dragging && e.Button == MouseButtons.Left)
         {
             _current = e.Location; _dragging = false; Capture = false;
-            if (Math.Abs(_current.X - _start.X) + Math.Abs(_current.Y - _start.Y) > 6) _shapes.Add(ToShape(_start, _current));
+            if (Tool == "flood") _shapes.Add(ToShape(_start, _current));
+            else if (Math.Abs(_current.X - _start.X) + Math.Abs(_current.Y - _start.Y) > 6) _shapes.Add(Tool == "line" ? ToFreeLine() : ToShape(_start, _current));
             Invalidate();
         }
         base.OnMouseUp(e);
@@ -102,7 +135,7 @@ public sealed class StatusIconCanvas : Control
     {
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         e.Graphics.Clear(BackColor);
-        foreach (var shape in _shapes) StatusIconVectors.DrawShape(e.Graphics, ClientRectangle, shape);
+        StatusIconVectors.Draw(e.Graphics, ClientRectangle, StatusIconVectors.Serialize(_shapes));
         if (_dragging) StatusIconVectors.DrawShape(e.Graphics, ClientRectangle, ToShape(_start, _current));
         using var border = new Pen(Color.White, 2); e.Graphics.DrawRectangle(border, 1, 1, Math.Max(0, Width - 3), Math.Max(0, Height - 3));
     }
@@ -112,4 +145,5 @@ public sealed class StatusIconCanvas : Control
         X = start.X * 100f / Math.Max(1, ClientSize.Width), Y = start.Y * 100f / Math.Max(1, ClientSize.Height),
         Width = (end.X - start.X) * 100f / Math.Max(1, ClientSize.Width), Height = (end.Y - start.Y) * 100f / Math.Max(1, ClientSize.Height)
     };
+    private StatusIconShape ToFreeLine() => new() { Type = "line", Points = _stroke.Select(point => new VectorPoint { X = point.X * 100f / Math.Max(1, ClientSize.Width), Y = point.Y * 100f / Math.Max(1, ClientSize.Height) }).ToList() };
 }

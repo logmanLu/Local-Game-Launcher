@@ -1,8 +1,18 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `1.4`
+**Current application patch:** `2.0.0a` (alpha)
 
 ## Patch history
+
+### 2.0.0a (alpha)
+
+- Game-path availability is now the sole automatic source for the game-status lamp. An existing registered EXE always selects the locked green **Installed locally** system status. When that EXE is unavailable, only green Installed locally changes to locked purple **Data missing**; red **In other machine**, purple Data missing, and blue **Storaged** remain selected. Save-path availability never changes the game-status lamp or the availability of Launch.
+- Entering Library refreshes this rule for every game. Entering game detail refreshes the selected game, independently colours game and save paths, shows Launch only for a valid game EXE (or an already tracked running process), and continues to show invalid save paths without disabling launch.
+- Game detail has three equally wide stacked sections: portrait 3:4 cover / headline and tags, note / side-by-side status lamps, then game path, save root, save path, region command, and export. Detail tag chips read `Dimension: value`; a double-click (within 0.8 seconds) on the play-status lamp advances it cyclically.
+- Play status is no longer edited in the first-level game editor. In second-level management, right-click a play-status tile to move it earlier or later by swapping neighbouring status positions; this order is also the detail-page cycle order.
+- Library cards show up to three administrator-selected dimensions. In Library management, use the dimension-selector control to choose which three dimensions are displayed; filtering still covers every dimension.
+- The vector icon editor is shared by status lamps and all logical header/action button glyphs. Its tools are freehand line, straight line, hollow circle, hollow triangle, hollow rectangle, and Paint-style enclosed-region white fill. Vectors are stored as white artwork over the status/button colour background. Built-in system game-status colours are deliberately fixed to preserve the path-availability rules.
+- There is no global rendering frame loop. Responsive page reconstruction while the user resizes a window is throttled to at most 30 layouts per second, followed by one final layout at the end of the resize gesture. This reduces resize stutter without lowering normal interaction or process-event responsiveness.
 
 ### 1.4
 
@@ -112,13 +122,13 @@ The top-level document (`AppData`) contains:
 | Field | Format / purpose |
 | --- | --- |
 | `Version` | Database format version; currently `1`. |
-| `Settings` | Window state, last safe page/selected game, and selected tag filters. Library and game-detail page state are restored at launch. |
+| `Settings` | Window state, last safe page/selected game, selected tag filters, the up-to-three Library-card dimensions, custom button vectors, and tracked running-process identities. Library and game-detail page state are restored at launch. |
 | `RcRootPath` | Absolute shared `rc` folder. `GamePath` values are relative to this folder. |
 | `SaveRoots` | Save-root mappings: an ID, display name, and `.` or Windows environment-variable path template. |
 | `RegionCommands` | `int -> command line` mapping. ID `0` means no region command. |
 | `RegionAliases` | `int -> display alias` mapping for region commands. UI displays aliases, not command lines. |
 | `TagSchema` | Ordered tag dimensions. Each dimension has an ID, a Unicode name, and `int -> Unicode string` values. Value `0` is the reserved `none` value. |
-| `PlayStatuses`, `GameStatuses` | Status objects with ID, display name, `#RRGGBB` color, and default flag. |
+| `PlayStatuses`, `GameStatuses` | Status objects with ID, display name, `#RRGGBB` color, default flag, and a persisted white vector icon. System game statuses additionally have `SystemRole`; their colours are fixed by the application. |
 | `Games` | Game records. |
 
 A game record contains an integer `Id`, Unicode `Title`, managed `ImageFile`, `Note`, executable `GamePath`, `SaveRootId`, file/folder `SavePath`, play/game status IDs, region-command ID, and a `Tags` list. `GamePath` is relative to `RcRootPath`; `SavePath` is relative to the root selected by `SaveRootId`. The legacy `SaveMethod` field is retained only for backwards-compatible JSON reads and is no longer used by the UI. The position in `Tags` corresponds to the position of the dimension in `TagSchema`.
@@ -152,12 +162,14 @@ Buttons that are unavailable for the current page are not created. Remaining hea
 
 - Normal mode: only left click on a game card opens its detail page. Right click does nothing.
 - Management mode: right click on a card asks to delete it.
-- Cards show a large ID/title, compact tag chips, and two status-color blocks at the bottom.
+- Cards show a large ID/title, compact tag chips from up to three configured dimensions, and two status-color blocks at the bottom. Library management exposes the three-dimension selection dialog; filters are not limited by this card-display setting.
 - The filter button is at the top right. The filter popup permits multiple values per tag dimension; values in one dimension are ORed, while different dimensions are ANDed. `none` is excluded. Clear removes all filters. Active filter chips are right aligned to the left of the filter button.
 
 ### Game detail and first-level edit
 
-The detail presentation is horizontally centered. Its cover is 3:4 portrait and status blocks are side-by-side. Valid game/save path text is light green and clickable; invalid or missing paths are bright red and not clickable. Long paths receive actual line breaks after separators, so they use multiple lines rather than horizontal scrolling even inside the vertical `FlowLayoutPanel`.
+The detail presentation is horizontally centered and uses three full-width sections. Its cover is 3:4 portrait, the headline is aligned beside it, the note/status section splits equally down the centre, and the two status blocks are side-by-side. Detail tag chips show `Dimension: mapped value`. Valid game/save path text is light green and clickable; invalid or missing paths are bright red and not clickable. Long paths receive actual line breaks after separators, so they use multiple lines rather than horizontal scrolling even inside the vertical `FlowLayoutPanel`.
+
+Each time a detail page opens, the game path is checked. A valid EXE forces the locked green Installed locally lamp and makes Launch available. An invalid EXE changes only Installed locally to the locked purple Data missing lamp and hides Launch (unless a previously tracked process is still running). Save-path validity only affects its own path-text colour; it does not change the game lamp or Launch. Double-click the play-status lamp within 0.8 seconds to advance to the next configured play status.
 
 Launching resolves the stored relative executable against `RcRootPath`, then uses the executable's directory as `WorkingDirectory`, matching the behavior of double-clicking that EXE in Explorer. If a region command is selected, GameShelf starts that command with the resolved executable as its final argument and still uses the game directory as the working directory.
 
@@ -172,14 +184,15 @@ Each management section grows only enough to contain its tiles. The overall page
 - `rc root folder`: left click its tile to choose the shared folder that contains all game resources. Changing it is the only path change needed after moving the `rc` tree to another computer.
 - Save roots: right-click a tile to edit its friendly name and its path template, or delete it. `.` means the selected game's directory; `%USERPROFILE%\Documents` and `%USERPROFILE%\AppData` resolve for the current Windows user.
 - Region commands: add/edit requires both alias and command line; delete is available by right click. Only aliases are presented in UI.
-- Statuses: left click/edit and right-click context menu allow editing name and RGB color (`R,G,B`, each 0–255). Statuses can be deleted while at least one remains; deleting the default promotes another status to default.
+- Statuses: left click/edit and right-click context menu allow editing name, RGB color (`R,G,B`, each 0–255), and the white vector icon. The four system game statuses (Installed locally, In other machine, Data missing, Storaged) retain their fixed semantic colours and cannot be deleted; custom statuses can be managed normally. Play-status context menus also offer Move earlier / Move later, swapping adjacent values.
+- Button icons: a dedicated section uses the same vector editor for every logical header/action glyph. The tools are freehand line, straight line, hollow circle, hollow triangle, hollow rectangle, and seed-fill of a closed transparent region bounded by white artwork.
 - Tag dimensions: right click a dimension to rename/delete it. Left click a non-`none` value to edit it; right click it for Edit/Delete. Deleting a value resets affected games to `none`.
 
 ## Storage and validation behavior
 
 - At run time `GamePath` resolves to a fully qualified existing `.exe` beneath `RcRootPath`; the persisted value is relative. A legacy absolute path remains readable until an `rc` root can be assigned.
 - At run time `SavePath` resolves to an existing file or directory beneath its selected save root; the persisted value is relative.
-- Invalid/missing resolved paths are retained for repair and the game status is set to the configured missing-data status.
+- Invalid/missing resolved paths are retained for repair. An invalid game EXE changes only the Installed locally game status to Data missing; save-path validity does not alter game status.
 - Database writes are serialized to a temporary file and atomically moved into place. A failed write leaves the original database intact.
 - A game image is only replaced after its managed PNG has been successfully staged.
 

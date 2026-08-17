@@ -32,6 +32,8 @@ public sealed class AppSettings
     public int WindowHeight { get; set; } = 720;
     public Dictionary<int, int?> Filters { get; set; } = [];
     public Dictionary<int, List<int>> SelectedTagFilters { get; set; } = [];
+    public List<int> HomeDisplayDimensionIds { get; set; } = [];
+    public Dictionary<string, string> ButtonIcons { get; set; } = [];
     public Dictionary<int, RunningGameProcess> RunningGameProcesses { get; set; } = [];
 }
 
@@ -56,6 +58,8 @@ public sealed class GameStatus
     public string Color { get; set; } = "#808080";
     public string IconVector { get; set; } = "";
     public bool IsDefault { get; set; }
+    /// <summary>Reserved role for the four path-aware game states; empty for user-defined states.</summary>
+    public string SystemRole { get; set; } = "";
 }
 
 public sealed class GameEntry
@@ -106,6 +110,18 @@ public static class Defaults
     public const int GameDefaultId = 3;
     public const int MissingGameStatusId = 2;
     public const int SaveRootGameDirectoryId = 1;
+    public const string InstalledRole = "installed";
+    public const string OtherMachineRole = "other-machine";
+    public const string MissingRole = "missing";
+    public const string StoragedRole = "storaged";
+    public static string GameStatusColor(string role) => role switch
+    {
+        InstalledRole => "#53b46b",
+        OtherMachineRole => "#d35b5b",
+        MissingRole => "#9a72d0",
+        StoragedRole => "#4c91d9",
+        _ => "#808080"
+    };
     public static List<SaveRoot> SaveRoots() =>
     [
         new() { Id = 1, Name = "Game directory", PathTemplate = "." },
@@ -120,9 +136,9 @@ public static class Defaults
     ];
     public static List<GameStatus> GameStatuses() =>
     [
-        new() { Id = 1, Name = "Installed locally", Color = "#53b46b", IconVector = StatusIconVectors.FilledCircle },
-        new() { Id = 2, Name = "In other machine", Color = "#d35b5b", IconVector = StatusIconVectors.OutlineCircle },
-        new() { Id = 3, Name = "Data missing", Color = "#9a72d0", IconVector = StatusIconVectors.Cross, IsDefault = true },
-        new() { Id = 4, Name = "Storaged", Color = "#4c91d9", IconVector = StatusIconVectors.OutlineCloud }
+        new() { Id = 1, Name = "Installed locally", Color = "#53b46b", IconVector = StatusIconVectors.FilledCircle, SystemRole = InstalledRole },
+        new() { Id = 2, Name = "In other machine", Color = "#d35b5b", IconVector = StatusIconVectors.OutlineCircle, SystemRole = OtherMachineRole },
+        new() { Id = 3, Name = "Data missing", Color = "#9a72d0", IconVector = StatusIconVectors.Cross, IsDefault = true, SystemRole = MissingRole },
+        new() { Id = 4, Name = "Storaged", Color = "#4c91d9", IconVector = StatusIconVectors.OutlineCloud, SystemRole = StoragedRole }
     ];
 }

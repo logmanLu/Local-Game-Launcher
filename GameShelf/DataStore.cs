@@ -252,12 +252,15 @@ public sealed class DataStore : IDisposable
         if (string.IsNullOrWhiteSpace(name)) throw new InvalidOperationException("Status name is required.");
         if (!System.Text.RegularExpressions.Regex.IsMatch(color, "^#[0-9a-fA-F]{6}$")) throw new InvalidOperationException("Status color must be #RRGGBB.");
         var status = Statuses(kind).FirstOrDefault(s => s.Id == id) ?? throw new InvalidOperationException("Status not found.");
+        if (kind == StatusKind.Game && !string.IsNullOrWhiteSpace(status.SystemRole) && !string.Equals(color, Defaults.GameStatusColor(status.SystemRole), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("The color of a built-in path-aware game status is locked.");
         status.Name = name.Trim(); status.Color = color; if (iconVector is not null) status.IconVector = iconVector; Save();
     }
 
     public void DeleteStatus(StatusKind kind, int id)
     {
         var statuses = Statuses(kind); var status = statuses.FirstOrDefault(s => s.Id == id) ?? throw new InvalidOperationException("Status not found.");
+        if (kind == StatusKind.Game && !string.IsNullOrWhiteSpace(status.SystemRole)) throw new InvalidOperationException("Built-in path-aware game statuses cannot be deleted.");
         if (statuses.Count <= 1) throw new InvalidOperationException("At least one status is required.");
         if (status.IsDefault) statuses.First(s => s.Id != id).IsDefault = true;
         statuses.Remove(status);
@@ -271,11 +274,59 @@ public sealed class DataStore : IDisposable
     public void NormalizeAndValidatePaths()
     {
         Normalize();
-        foreach (var g in Data.Games)
-        {
-            if (!PathRules.IsValidGameExe(ResolveGamePath(g.GamePath)) || !PathRules.IsValidSaveTarget(ResolveSavePath(g))) g.GameStatusId = Defaults.MissingGameStatusId;
-        }
+        RefreshAllGamePathStatuses();
         Normalize();
+    }
+
+    /// <summary>
+    /// Only the executable path controls the automatic game-status lamp. A valid
+    /// executable selects Installed locally. An invalid path only changes Installed
+    /// locally into Data missing, preserving user-selected red, purple, and blue states.
+    /// Save-path validity intentionally has no effect here.
+    /// </summary>
+    public bool RefreshGamePathStatus(GameEntry game)
+    {
+        var installed = GameStatusByRole(Defaults.InstalledRole);
+        var missing = GameStatusByRole(Defaults.MissingRole);
+        if (installed is null || missing is null) return false;
+        var valid = PathRules.IsValidGameExe(ResolveGamePath(game.GamePath));
+        var desired = valid ? installed.Id : game.GameStatusId == installed.Id ? missing.Id : game.GameStatusId;
+        if (desired == game.GameStatusId) return false;
+        AppLog.Debug("DataStore", $"Game {game.Id} path availability changed game status from {game.GameStatusId} to {desired}.");
+        game.GameStatusId = desired;
+        return true;
+    }
+
+    public bool RefreshAllGamePathStatuses()
+    {
+        var changed = false;
+        foreach (var game in Data.Games) changed |= RefreshGamePathStatus(game);
+        return changed;
+    }
+
+    public void SetNextPlayStatus(int gameId)
+    {
+        var game = GetGame(gameId); var statuses = Data.PlayStatuses;
+        var index = statuses.FindIndex(status => status.Id == game.PlayStatusId);
+        game.PlayStatusId = statuses[(index + 1 + statuses.Count) % statuses.Count].Id;
+        Save();
+    }
+
+    public void MovePlayStatus(int id, int direction)
+    {
+        var index = Data.PlayStatuses.FindIndex(status => status.Id == id);
+        var target = index + direction;
+        if (index < 0) throw new InvalidOperationException("Play status not found.");
+        if (target < 0 || target >= Data.PlayStatuses.Count) return;
+        (Data.PlayStatuses[index], Data.PlayStatuses[target]) = (Data.PlayStatuses[target], Data.PlayStatuses[index]);
+        Save();
+    }
+
+    public void SetHomeDisplayDimensions(IEnumerable<int> dimensionIds)
+    {
+        var valid = new HashSet<int>(Data.TagSchema.Select(dimension => dimension.DimensionId));
+        Data.Settings.HomeDisplayDimensionIds = dimensionIds.Where(valid.Contains).Distinct().Take(3).ToList();
+        Normalize(); Save();
     }
 
     private void Normalize()
@@ -294,6 +345,8 @@ public sealed class DataStore : IDisposable
         foreach (var d in Data.TagSchema) { d.Values ??= []; d.Values[0] = "none"; }
         Data.Settings ??= new AppSettings();
         Data.Settings.SelectedTagFilters ??= [];
+        Data.Settings.HomeDisplayDimensionIds ??= [];
+        Data.Settings.ButtonIcons ??= [];
         Data.Settings.RunningGameProcesses ??= [];
         var dimensionsById = Data.TagSchema.ToDictionary(d => d.DimensionId);
         foreach (var dimensionId in Data.Settings.SelectedTagFilters.Keys.ToList())
@@ -302,6 +355,13 @@ public sealed class DataStore : IDisposable
             var values = Data.Settings.SelectedTagFilters[dimensionId] ??= [];
             values.RemoveAll(value => value == 0 || !dimension.Values.ContainsKey(value));
             if (values.Count == 0) Data.Settings.SelectedTagFilters.Remove(dimensionId);
+        }
+        Data.Settings.HomeDisplayDimensionIds = Data.Settings.HomeDisplayDimensionIds
+            .Where(dimensionsById.ContainsKey).Distinct().Take(3).ToList();
+        foreach (var dimension in Data.TagSchema)
+        {
+            if (Data.Settings.HomeDisplayDimensionIds.Count >= 3) break;
+            if (!Data.Settings.HomeDisplayDimensionIds.Contains(dimension.DimensionId)) Data.Settings.HomeDisplayDimensionIds.Add(dimension.DimensionId);
         }
         Data.Games ??= [];
         if (string.IsNullOrWhiteSpace(Data.RcRootPath))
@@ -349,13 +409,16 @@ public sealed class DataStore : IDisposable
         foreach (var status in Data.GameStatuses)
         {
             if (status.Id == 2 && status.Name == "Not local, available elsewhere") status.Name = "In other machine";
+            if (string.IsNullOrWhiteSpace(status.SystemRole) && gameDefaults.TryGetValue(status.Id, out var systemFallback)) status.SystemRole = systemFallback.SystemRole;
             if (string.IsNullOrWhiteSpace(status.IconVector) && gameDefaults.TryGetValue(status.Id, out var fallback)) status.IconVector = fallback.IconVector;
             else if (string.IsNullOrWhiteSpace(status.IconVector)) status.IconVector = StatusIconVectors.DefaultFor(StatusKind.Game);
+            if (!string.IsNullOrWhiteSpace(status.SystemRole)) status.Color = Defaults.GameStatusColor(status.SystemRole);
         }
-        if (!Data.GameStatuses.Any(status => string.Equals(status.Name, "Storaged", StringComparison.OrdinalIgnoreCase)))
+        foreach (var required in Defaults.GameStatuses())
         {
-            var id = Data.GameStatuses.Select(status => status.Id).DefaultIfEmpty(0).Max() + 1;
-            Data.GameStatuses.Add(new GameStatus { Id = id, Name = "Storaged", Color = "#4c91d9", IconVector = StatusIconVectors.OutlineCloud });
+            if (Data.GameStatuses.Any(status => string.Equals(status.SystemRole, required.SystemRole, StringComparison.Ordinal))) continue;
+            var id = Data.GameStatuses.Any(status => status.Id == required.Id) ? Data.GameStatuses.Select(status => status.Id).DefaultIfEmpty(0).Max() + 1 : required.Id;
+            Data.GameStatuses.Add(new GameStatus { Id = id, Name = required.Name, Color = required.Color, IconVector = required.IconVector, IsDefault = required.IsDefault, SystemRole = required.SystemRole });
         }
     }
 
@@ -371,6 +434,7 @@ public sealed class DataStore : IDisposable
 
     private TagDimension Dimension(int id) => Data.TagSchema.FirstOrDefault(d => d.DimensionId == id) ?? throw new InvalidOperationException("Dimension not found.");
     private List<GameStatus> Statuses(StatusKind kind) => kind == StatusKind.Play ? Data.PlayStatuses : Data.GameStatuses;
+    private GameStatus? GameStatusByRole(string role) => Data.GameStatuses.FirstOrDefault(status => string.Equals(status.SystemRole, role, StringComparison.Ordinal));
     public void Log(string message) => AppLog.Error("DataStore", message);
     public void Dispose() { }
 }
