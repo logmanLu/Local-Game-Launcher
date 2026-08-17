@@ -1,0 +1,23 @@
+# User data and distributable output
+savedata/
+publish/
+*.gspkg
+
+# .NET build output and local SDK/cache state
+**/bin/
+**/obj/
+.dotnet/
+.dotnet-cli/
+.nuget-packages/
+
+# Local IDE/agent state and machine-specific files
+.vs/
+.vscode/
+.idea/
+.codex/
+.agents/
+codex.txt
+*.user
+*.suo
+*.pdb
+*.log
