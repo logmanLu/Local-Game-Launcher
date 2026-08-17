@@ -619,7 +619,10 @@ public sealed class MainForm : Form
         page.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, sectionWidth));
 
         // Section 1: an invisible 1A/1B split. 1A is exactly 3:4 and 1B fills its height.
-        var imageWidth = (int)Math.Round(sectionWidth * .42); var headlineWidth = sectionWidth - imageWidth;
+        // The hidden 1A/1B divider is the horizontal centre of Section 1.
+        // The cover therefore owns the left half and derives this section's height
+        // from its fixed 3:4 portrait aspect ratio.
+        var imageWidth = sectionWidth / 2; var headlineWidth = sectionWidth - imageWidth;
         var firstHeight = imageWidth * 4 / 3;
         var first = new TableLayoutPanel { ColumnCount = 2, Width = sectionWidth, Height = firstHeight, Margin = Padding.Empty, BackColor = page.BackColor };
         first.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, imageWidth)); first.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, headlineWidth));
