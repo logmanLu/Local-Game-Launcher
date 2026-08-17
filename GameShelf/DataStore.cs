@@ -16,6 +16,7 @@ public sealed class DataStore : IDisposable
         _paths = paths;
         Directory.CreateDirectory(paths.DataDirectory);
         Directory.CreateDirectory(paths.ImagesDirectory);
+        AppLog.Debug("DataStore", "Opening local database.");
         Data = Load();
         NormalizeAndValidatePaths();
         Save();
@@ -31,8 +32,8 @@ public sealed class DataStore : IDisposable
         }
         catch (Exception ex)
         {
-            Log("Could not read database: " + ex);
-            throw new InvalidOperationException("The savedata database is unreadable. See savedata/errors.log.", ex);
+            AppLog.Error("DataStore", "Could not read database.", ex);
+            throw new InvalidOperationException("The savedata database is unreadable. See the log folder next to GameShelf.exe.", ex);
         }
     }
 
@@ -44,10 +45,11 @@ public sealed class DataStore : IDisposable
         {
             File.WriteAllText(temporary, JsonSerializer.Serialize(Data, _json), new UTF8Encoding(false));
             File.Move(temporary, _paths.DatabaseFile, true);
+            AppLog.Debug("DataStore", "Saved local database.");
         }
         catch (Exception ex)
         {
-            Log("Could not save database: " + ex);
+            AppLog.Error("DataStore", "Could not save database.", ex);
             throw new InvalidOperationException("GameShelf cannot write savedata. No change was confirmed.", ex);
         }
     }
@@ -369,7 +371,7 @@ public sealed class DataStore : IDisposable
 
     private TagDimension Dimension(int id) => Data.TagSchema.FirstOrDefault(d => d.DimensionId == id) ?? throw new InvalidOperationException("Dimension not found.");
     private List<GameStatus> Statuses(StatusKind kind) => kind == StatusKind.Play ? Data.PlayStatuses : Data.GameStatuses;
-    public void Log(string message) => File.AppendAllText(_paths.ErrorLogFile, $"{DateTimeOffset.Now:u} {message}{Environment.NewLine}");
+    public void Log(string message) => AppLog.Error("DataStore", message);
     public void Dispose() { }
 }
 

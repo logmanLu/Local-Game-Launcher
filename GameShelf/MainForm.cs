@@ -53,6 +53,7 @@ public sealed class MainForm : Form
         var b = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
         var s = _store.Data.Settings; s.WindowX = b.X; s.WindowY = b.Y; s.WindowWidth = b.Width; s.WindowHeight = b.Height; s.IsMaximized = WindowState == FormWindowState.Maximized; s.IsFullscreen = _fullScreen; s.Page = _page; s.SelectedGameId = _selectedId;
         _store.Save();
+        AppLog.Debug("UI", $"Persisted page '{_page}' and selected game '{_selectedId?.ToString() ?? "none"}'.");
     }
 
     private void HandleKeys(object? sender, KeyEventArgs e)
@@ -595,14 +596,15 @@ public sealed class MainForm : Form
         if (_processTracker.IsRunning(game.Id))
         {
             try { _processTracker.RequestStop(game.Id); }
-            catch (Exception ex) { MessageBox.Show(ex.Message, "GameShelf", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            catch (Exception ex) { AppLog.Error("Launcher", $"Stop request failed for game {game.Id}.", ex); MessageBox.Show(ex.Message, "GameShelf", MessageBoxButtons.OK, MessageBoxIcon.Error); }
             return;
         }
         _store.NormalizeAndValidatePaths(); _store.Save();
         var resolvedGamePath = _store.ResolveGamePath(game.GamePath);
-        if (!PathRules.IsValidGameExe(resolvedGamePath)) { MessageBox.Show(_t["Missing path"]); return; }
+        if (!PathRules.IsValidGameExe(resolvedGamePath)) { AppLog.Warning("Launcher", $"Launch rejected for game {game.Id}: executable path is unavailable."); MessageBox.Show(_t["Missing path"]); return; }
         try
         {
+            AppLog.Information("Launcher", $"Launching game {game.Id} ({game.Title}).");
             var started = await Task.Run(() =>
             {
                 var gameDirectory = Path.GetDirectoryName(resolvedGamePath) ?? Environment.CurrentDirectory;
@@ -618,8 +620,9 @@ public sealed class MainForm : Form
                 }
             });
             _processTracker.TrackLaunchedProcess(game.Id, game.RegionCommandId == 0, started);
+            AppLog.Information("Launcher", $"Launch request completed for game {game.Id}.");
         }
-        catch (Exception ex) { MessageBox.Show("Could not launch game: " + ex.Message, "GameShelf", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        catch (Exception ex) { AppLog.Error("Launcher", $"Could not launch game {game.Id}.", ex); MessageBox.Show("Could not launch game: " + ex.Message, "GameShelf", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
 
     private void ShowEdit()

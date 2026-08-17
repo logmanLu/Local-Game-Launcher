@@ -6,7 +6,7 @@ public sealed class AppPaths
     public required string DataDirectory { get; init; }
     public required string ImagesDirectory { get; init; }
     public required string DatabaseFile { get; init; }
-    public required string ErrorLogFile { get; init; }
+    public required string LogDirectory { get; init; }
 
     public static AppPaths FromExecutable()
     {
@@ -18,7 +18,7 @@ public sealed class AppPaths
             DataDirectory = data,
             ImagesDirectory = Path.Combine(data, "images"),
             DatabaseFile = Path.Combine(data, "gameshelf.json"),
-            ErrorLogFile = Path.Combine(data, "errors.log")
+            LogDirectory = Path.Combine(root, "log")
         };
     }
 }
