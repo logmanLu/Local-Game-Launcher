@@ -401,7 +401,8 @@ public sealed class MainForm : Form
         var list = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(S(18)), BackColor = popup.BackColor };
         foreach (var dimension in _store.Data.TagSchema)
         {
-            var id = dimension.DimensionId; var item = new CheckBox { Text = dimension.Name, Appearance = Appearance.Button, Checked = selected.Contains(id), AutoSize = true, Padding = new Padding(S(13), S(9), S(13), S(9)), Margin = new Padding(S(6)), FlatStyle = FlatStyle.Flat, ForeColor = Color.White, BackColor = Color.FromArgb(72, 83, 93), Font = new Font(Font.FontFamily, S(14), FontStyle.Bold) };
+            var id = dimension.DimensionId; var itemFont = new Font(Font.FontFamily, S(14), FontStyle.Bold); var measured = TextRenderer.MeasureText(dimension.Name, itemFont);
+            var item = new CheckBox { Text = dimension.Name, Appearance = Appearance.Button, Checked = selected.Contains(id), AutoSize = false, Width = measured.Width + S(30), Height = Math.Max(S(46), measured.Height + S(18)), TextAlign = ContentAlignment.MiddleCenter, Margin = new Padding(S(6)), FlatStyle = FlatStyle.Flat, ForeColor = Color.White, BackColor = Color.FromArgb(72, 83, 93), Font = itemFont };
             item.FlatAppearance.CheckedBackColor = Color.FromArgb(104, 76, 151); item.CheckedChanged += (_, _) => { if (item.Checked && !selected.Contains(id) && selected.Count >= 3) { item.Checked = false; return; } if (item.Checked) selected.Add(id); else selected.Remove(id); };
             list.Controls.Add(item);
         }
@@ -656,17 +657,30 @@ public sealed class MainForm : Form
         var page = new TableLayoutPanel { ColumnCount = 1, Width = pageWidth, Padding = new Padding(S(24)), BackColor = Color.FromArgb(35, 38, 39), Margin = Padding.Empty, Left = (availableWidth - pageWidth) / 2 };
         page.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, sectionWidth));
 
-        // Section 1: an invisible 1A/1B split. 1A is exactly 3:4 and 1B fills its height.
-        // The hidden 1A/1B divider is the horizontal centre of Section 1.
-        // The cover therefore owns the left half and derives this section's height
-        // from its fixed 3:4 portrait aspect ratio.
-        var imageWidth = sectionWidth / 2; var headlineWidth = sectionWidth - imageWidth;
-        var firstHeight = imageWidth * 4 / 3;
+        // Section 1 uses an equal hidden 1A/1B split.  The 1B content determines
+        // the section height; the 3:4 cover is then centred within 1A so its top
+        // aligns with the number row and its bottom aligns with the tag area.
+        var imageColumnWidth = sectionWidth / 2; var headlineWidth = sectionWidth - imageColumnWidth; var headlineContentWidth = headlineWidth - S(20);
+        var titleFont = new Font(Font.FontFamily, S(34), FontStyle.Bold);
+        var titleMeasure = TextRenderer.MeasureText(game.Title, titleFont, new Size(headlineContentWidth, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
+        var tagChips = new List<Label>();
+        for (var index = 0; index < _store.Data.TagSchema.Count; index++)
+        {
+            var dimension = _store.Data.TagSchema[index]; var value = dimension.Values.GetValueOrDefault(game.Tags.ElementAtOrDefault(index)) ?? "";
+            if (string.IsNullOrWhiteSpace(value)) continue;
+            var chip = FilterChip($"{dimension.Name} : {value}"); chip.Margin = new Padding(0, S(3), 0, S(3)); chip.MaximumSize = new Size(headlineContentWidth, 0); tagChips.Add(chip);
+        }
+        var tagHeight = Math.Max(S(38), tagChips.Sum(chip => chip.PreferredSize.Height + chip.Margin.Vertical));
+        var naturalFirstHeight = S(104) + titleMeasure.Height + S(16) + tagHeight;
+        var firstHeight = Math.Min(naturalFirstHeight, imageColumnWidth * 4 / 3);
         var first = new TableLayoutPanel { ColumnCount = 2, Width = sectionWidth, Height = firstHeight, Margin = Padding.Empty, BackColor = page.BackColor };
-        first.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, imageWidth)); first.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, headlineWidth));
-        first.Controls.Add(new PictureBox { Dock = DockStyle.Fill, Margin = Padding.Empty, SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), AccessibleName = "Cover" }, 0, 0);
+        first.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, imageColumnWidth)); first.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, headlineWidth));
+        var coverHeight = Math.Min(firstHeight, imageColumnWidth * 4 / 3); var coverWidth = coverHeight * 3 / 4;
+        var coverHost = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = page.BackColor };
+        coverHost.Controls.Add(new PictureBox { Width = coverWidth, Height = coverHeight, Left = (imageColumnWidth - coverWidth) / 2, Top = firstHeight - coverHeight, SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), AccessibleName = "Cover" });
+        first.Controls.Add(coverHost, 0, 0);
         var headline = new TableLayoutPanel { ColumnCount = 1, RowCount = 3, Dock = DockStyle.Fill, Margin = new Padding(S(20), 0, 0, 0), BackColor = page.BackColor };
-        headline.RowStyles.Add(new RowStyle(SizeType.Absolute, S(104))); headline.RowStyles.Add(new RowStyle(SizeType.AutoSize)); headline.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        headline.RowStyles.Add(new RowStyle(SizeType.Absolute, S(104))); headline.RowStyles.Add(new RowStyle(SizeType.Absolute, titleMeasure.Height + S(16))); headline.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var numberAndLaunch = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = page.BackColor };
         numberAndLaunch.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); numberAndLaunch.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         numberAndLaunch.Controls.Add(new Label { Text = $"#{game.Id}", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Font = new Font(Font.FontFamily, S(42), FontStyle.Bold), ForeColor = Color.White }, 0, 0);
@@ -679,13 +693,9 @@ public sealed class MainForm : Form
             numberAndLaunch.Controls.Add(launch, 1, 0);
         }
         headline.Controls.Add(numberAndLaunch, 0, 0);
-        headline.Controls.Add(new Label { Text = game.Title, AutoSize = true, MaximumSize = new Size(headlineWidth - S(24), 0), Font = new Font(Font.FontFamily, S(34), FontStyle.Bold), ForeColor = Color.White, Margin = new Padding(0, S(8), 0, S(8)) }, 0, 1);
-        var tags = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, WrapContents = true, Padding = Padding.Empty, BackColor = page.BackColor };
-        for (var index = 0; index < _store.Data.TagSchema.Count; index++)
-        {
-            var dimension = _store.Data.TagSchema[index]; var value = dimension.Values.GetValueOrDefault(game.Tags.ElementAtOrDefault(index)) ?? "";
-            if (!string.IsNullOrWhiteSpace(value)) tags.Controls.Add(FilterChip($"{dimension.Name}: {value}"));
-        }
+        headline.Controls.Add(new Label { Text = game.Title, AutoSize = true, MaximumSize = new Size(headlineContentWidth, 0), Font = titleFont, ForeColor = Color.White, Margin = new Padding(0, S(8), 0, S(8)) }, 0, 1);
+        var tags = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = Padding.Empty, BackColor = page.BackColor };
+        foreach (var chip in tagChips) tags.Controls.Add(chip);
         headline.Controls.Add(tags, 0, 2); first.Controls.Add(headline, 1, 0);
 
         // Section 2: an equal 2A/2B split, with the two lamps horizontally sharing 2B.

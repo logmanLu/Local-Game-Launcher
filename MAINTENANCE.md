@@ -1,8 +1,13 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.0a1` (alpha)
+**Current application patch:** `2.0.0a2` (alpha)
 
 ## Patch history
+
+### 2.0.0a2 (alpha)
+
+- Detail cover sizing now follows the actual height of the number, title, and tag area instead of using half the page width as its source. The cover remains 3:4, is centred in the left half, and aligns vertically with the corresponding headline/tag section rather than expanding to an unnecessary fullscreen height. Detail tags now appear one per row and use the spaced form `Dimension : value`.
+- The Library-card dimension selector now measures each dimension name and assigns its tile enough width and height for the text, rather than relying on the unreliable auto-size behaviour of appearance-button checkboxes.
 
 ### 2.0.0a1 (alpha)
 
