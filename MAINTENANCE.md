@@ -1,8 +1,13 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.0a4` (alpha)
+**Current application patch:** `2.0.0a5` (alpha)
 
 ## Patch history
+
+### 2.0.0a5 (alpha)
+
+- Replaced resize-time page reconstruction with a dark presentation mask. While the user drags a normal window border, GameShelf intentionally does not show or rebuild the page; it performs one layout once `ResizeEnd` arrives. Fullscreen and other programmatic resizes use the same mask and one-shot final refresh. This removes visible redraw churn even if Windows emits resize notifications without `ResizeEnd`.
+- Closed choice boxes no longer consume the mouse wheel and silently change their selected value while the user scrolls an edit page. A native-message-safe combo-box wrapper forwards the wheel to the outer page instead; wheel selection remains available only after the drop-down has been explicitly opened.
 
 ### 2.0.0a4 (alpha)
 

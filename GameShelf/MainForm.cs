@@ -21,32 +21,34 @@ public sealed class MainForm : Form
     private Rectangle _restoreBounds;
     private FormBorderStyle _restoreBorderStyle = FormBorderStyle.Sizable;
     private readonly Dictionary<int, DateTime> _playStatusClicks = [];
-    private readonly System.Windows.Forms.Timer _resizeLayoutTimer = new() { Interval = 33 };
-    // FormBorderStyle/WindowState changes emit Resize but not ResizeEnd.  Suppress
-    // the drag-resize timer around those programmatic transitions so it cannot keep
-    // rebuilding the page indefinitely after F11.
+    private readonly Panel _resizeMask = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(27, 29, 30), Visible = false };
+    private bool _interactiveResize;
+    private bool _resizeRefreshQueued;
+    // FormBorderStyle/WindowState changes emit Resize but not ResizeEnd. Suppress
+    // resize handling around those programmatic transitions and refresh once after.
     private bool _suppressResizeLayout;
 
     public MainForm(DataStore store)
     {
         _store = store; _packages = new PackageService(store); _processTracker = new GameProcessTracker(store); _t = new Localizer(store.Data.Settings.Language);
         Text = "GameShelf"; Font = new Font("Segoe UI", 14f, FontStyle.Bold); MinimumSize = new Size(720, 405); KeyPreview = true; StartPosition = FormStartPosition.Manual; FormBorderStyle = FormBorderStyle.Sizable;
-        RestoreWindow(); Controls.Add(_content); Controls.Add(_top); ApplyTheme();
+        RestoreWindow(); Controls.Add(_content); Controls.Add(_top); Controls.Add(_resizeMask); ApplyTheme();
         _selectedId = store.Data.Settings.SelectedGameId;
         _management = false;
         if (_selectedId is not null && store.Data.Games.Any(game => game.Id == _selectedId) && store.Data.Settings.Page is "detail" or "edit") ShowDetail(); else { _selectedId = null; ShowLibrary(); }
-        KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => { _resizeLayoutTimer.Stop(); _processTracker.Dispose(); };
+        KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => _processTracker.Dispose();
         Shown += (_, _) =>
         {
             if (!_fullScreen) return;
             // RestoreWindow runs before the native form handle exists, so its
             // fullscreen transition cannot queue the usual post-transition refresh.
-            _resizeLayoutTimer.Stop();
             RefreshResponsiveLayout();
+            EndResizeMask();
             AppLog.Debug("UI", $"Restored fullscreen on first show; refreshed '{_page}' once at {ClientSize.Width}x{ClientSize.Height}.");
         };
-        _resizeLayoutTimer.Tick += (_, _) => { if (!IsDisposed && !_suppressResizeLayout && WindowState != FormWindowState.Minimized) RefreshResponsiveLayout(); };
-        ResizeEnd += (_, _) => { if (_suppressResizeLayout) return; _resizeLayoutTimer.Stop(); EnforceAspect(); RefreshResponsiveLayout(); }; Resize += (_, _) => QueueResponsiveLayout();
+        ResizeBegin += (_, _) => BeginInteractiveResize();
+        ResizeEnd += (_, _) => EndInteractiveResize();
+        Resize += (_, _) => QueueResponsiveLayout();
         _processTracker.StateChanged += (_, e) =>
         {
             if (IsDisposed || !IsHandleCreated) return;
@@ -84,7 +86,7 @@ public sealed class MainForm : Form
     private void ToggleFullscreen()
     {
         var entering = !_fullScreen;
-        _resizeLayoutTimer.Stop();
+        BeginResizeMask();
         _suppressResizeLayout = true;
         AppLog.Debug("UI", entering ? "Entering fullscreen; drag-resize layout scheduling is suspended." : "Leaving fullscreen; drag-resize layout scheduling is suspended.");
         try
@@ -115,8 +117,8 @@ public sealed class MainForm : Form
         BeginInvoke((Action)(() =>
         {
             if (IsDisposed) return;
-            _resizeLayoutTimer.Stop();
             RefreshResponsiveLayout();
+            EndResizeMask();
             AppLog.Debug("UI", $"Fullscreen transition completed; refreshed '{_page}' once at {ClientSize.Width}x{ClientSize.Height}.");
         }));
     }
@@ -429,12 +431,52 @@ public sealed class MainForm : Form
         _content.Padding = new Padding(S(42));
         if (_page == "edit") CenterEditLayout(); else ShowCurrent();
     }
+    private void BeginResizeMask()
+    {
+        if (IsDisposed) return;
+        _resizeMask.Visible = true;
+        _resizeMask.BringToFront();
+    }
+    private void EndResizeMask()
+    {
+        if (!IsDisposed) _resizeMask.Visible = false;
+    }
+    private void BeginInteractiveResize()
+    {
+        if (_suppressResizeLayout || _fullScreen) return;
+        _interactiveResize = true;
+        BeginResizeMask();
+        AppLog.Debug("UI", "Interactive resize started; page presentation is masked until the final layout.");
+    }
+    private void EndInteractiveResize()
+    {
+        if (_suppressResizeLayout || !_interactiveResize) return;
+        _interactiveResize = false;
+        _suppressResizeLayout = true;
+        try { EnforceAspect(); }
+        finally { _suppressResizeLayout = false; }
+        RefreshResponsiveLayout();
+        EndResizeMask();
+        AppLog.Debug("UI", $"Interactive resize finished; refreshed '{_page}' once at {ClientSize.Width}x{ClientSize.Height}.");
+    }
     private void QueueResponsiveLayout()
     {
-        // ResizeEnd is not sent for fullscreen/maximize transitions.  Fullscreen
-        // performs its own one-shot refresh, never the interactive drag timer.
+        // ResizeEnd is not sent for fullscreen/maximize transitions. Fullscreen
+        // performs its own one-shot refresh, while an interactive resize remains
+        // masked and is laid out only at ResizeEnd.
         if (IsDisposed || _suppressResizeLayout || _fullScreen || WindowState == FormWindowState.Minimized || ClientSize.Width < 100) return;
-        if (!_resizeLayoutTimer.Enabled) _resizeLayoutTimer.Start();
+        if (_interactiveResize) { BeginResizeMask(); return; }
+        if (_resizeRefreshQueued || !IsHandleCreated) return;
+        _resizeRefreshQueued = true;
+        BeginResizeMask();
+        BeginInvoke((Action)(() =>
+        {
+            _resizeRefreshQueued = false;
+            if (IsDisposed || _suppressResizeLayout || _fullScreen || WindowState == FormWindowState.Minimized) { EndResizeMask(); return; }
+            RefreshResponsiveLayout();
+            EndResizeMask();
+            AppLog.Debug("UI", $"Programmatic resize refreshed '{_page}' once at {ClientSize.Width}x{ClientSize.Height}.");
+        }));
     }
     private void CenterEditLayout()
     {
@@ -445,14 +487,15 @@ public sealed class MainForm : Form
     }
     private void EnableWheelScroll(Control root)
     {
-        root.MouseWheel += (_, e) =>
-        {
-            var bar = _content.VerticalScroll;
-            if (!bar.Visible) return;
-            var next = Math.Clamp(bar.Value - e.Delta, bar.Minimum, Math.Max(bar.Minimum, bar.Maximum - bar.LargeChange + 1));
-            bar.Value = next; _content.PerformLayout();
-        };
+        root.MouseWheel += (_, e) => ScrollContentByWheel(e.Delta);
         foreach (Control child in root.Controls) EnableWheelScroll(child);
+    }
+    private void ScrollContentByWheel(int delta)
+    {
+        var bar = _content.VerticalScroll;
+        if (!bar.Visible) return;
+        var next = Math.Clamp(bar.Value - delta, bar.Minimum, Math.Max(bar.Minimum, bar.Maximum - bar.LargeChange + 1));
+        bar.Value = next; _content.PerformLayout();
     }
     private Panel FieldCard(Control field, bool tagField = false)
     {
@@ -888,7 +931,7 @@ public sealed class MainForm : Form
     private static IEnumerable<Control> Descendants(Control parent) => parent.Controls.Cast<Control>().SelectMany(child => new[] { child }.Concat(Descendants(child)));
     private ComboBox ChoiceCombo(IReadOnlyList<Selection<int>> choices, int selectedId)
     {
-        var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, DisplayMember = "Text", ValueMember = "Value" };
+        var combo = new ScrollSafeComboBox { DropDownStyle = ComboBoxStyle.DropDownList, DisplayMember = "Text", ValueMember = "Value", WheelScrollRequested = ScrollContentByWheel };
         combo.Items.AddRange(choices.Cast<object>().ToArray()); SelectChoice(combo, selectedId); return combo;
     }
     private static void SelectChoice(ComboBox combo, int id)
@@ -1198,6 +1241,25 @@ public sealed class MainForm : Form
 public sealed record Selection<T>(T Value, string Text)
 {
     public override string ToString() => Text;
+}
+
+/// <summary>Prevents a closed native ComboBox from consuming the page scroll wheel.</summary>
+public sealed class ScrollSafeComboBox : ComboBox
+{
+    [System.ComponentModel.Browsable(false)]
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public Action<int>? WheelScrollRequested { get; set; }
+    protected override void WndProc(ref Message m)
+    {
+        const int WmMouseWheel = 0x20A;
+        if (m.Msg == WmMouseWheel && !DroppedDown)
+        {
+            var delta = (short)(((long)m.WParam >> 16) & 0xffff);
+            WheelScrollRequested?.Invoke(delta);
+            return;
+        }
+        base.WndProc(ref m);
+    }
 }
 
 public static class CommandLine
