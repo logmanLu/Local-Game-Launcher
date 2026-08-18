@@ -69,8 +69,10 @@ public sealed class DataStore : IDisposable
         }
 
         var sourceVersion = Data.Version;
-        // v1 -> v2: permanent dark UI removes the Theme setting; the strongly
-        // typed object naturally omits it on save, while unknown future fields stay.
+        // v1 -> v2: permanent dark UI removes the obsolete Theme field. Other
+        // future fields remain in JsonExtensionData and are round-tripped.
+        Data.Settings ??= new AppSettings();
+        Data.Settings.UnknownFields?.Remove("Theme");
         Data.Version = AppData.CurrentFormatVersion;
         AppLog.Information("DataStore", $"Migrated savedata format v{sourceVersion} to v{Data.Version}.");
     }
