@@ -8,12 +8,12 @@ namespace GameShelf;
 
 public sealed class MainForm : Form
 {
+    private sealed record LauncherChoice(string Path, string Label, bool IsPreview, string SortKey);
     private readonly DataStore _store;
     private readonly PackageService _packages;
     private readonly GameProcessTracker _processTracker;
     private Localizer _t;
     private readonly FlowLayoutPanel _content = new() { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(42) };
-    private readonly Panel _titleBar = new() { Dock = DockStyle.Top, Height = 0, Visible = false };
     private readonly Panel _top = new() { Dock = DockStyle.Top, Height = 108 };
     private int? _selectedId;
     private string _page = "library";
@@ -28,11 +28,12 @@ public sealed class MainForm : Form
     // FormBorderStyle/WindowState changes emit Resize but not ResizeEnd. Suppress
     // resize handling around those programmatic transitions and refresh once after.
     private bool _suppressResizeLayout;
-    private const int WmSysCommand = 0x0112;
-    private const uint MfString = 0x0000, MfPopup = 0x0010, MfSeparator = 0x0800, MfChecked = 0x0008;
+    private const int WmCommand = 0x0111;
+    private const uint MfString = 0x0000, MfPopup = 0x0010, MfChecked = 0x0008;
     private const int LauncherCommandBase = 0x7000, LanguageCommandBase = 0x7200;
     private readonly Dictionary<int, Action> _nativeMenuCommands = [];
-    private bool _nativeSystemMenuBuilt;
+    private IntPtr _nativeMenu;
+    private bool _nativeMenuBuilt;
 
     public MainForm(DataStore store)
     {
@@ -42,10 +43,10 @@ public sealed class MainForm : Form
         _selectedId = store.Data.Settings.SelectedGameId;
         _management = false;
         if (_selectedId is not null && store.Data.Games.Any(game => game.Id == _selectedId) && store.Data.Settings.Page is "detail" or "edit") ShowDetail(); else { _selectedId = null; ShowLibrary(); }
-        KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => _processTracker.Dispose();
+        KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => { DetachNativeMenu(); _processTracker.Dispose(); };
         Shown += (_, _) =>
         {
-            BuildNativeSystemMenu();
+            if (!_fullScreen) BuildNativeMenu();
             if (!_fullScreen) return;
             // RestoreWindow runs before the native form handle exists, so its
             // fullscreen transition cannot queue the usual post-transition refresh.
@@ -56,11 +57,6 @@ public sealed class MainForm : Form
         ResizeBegin += (_, _) => BeginInteractiveResize();
         ResizeEnd += (_, _) => EndInteractiveResize();
         Resize += (_, _) => QueueResponsiveLayout();
-        _processTracker.StateChanged += (_, e) =>
-        {
-            if (IsDisposed || !IsHandleCreated) return;
-            BeginInvoke((Action)(() => { if (!IsDisposed && _page == "detail" && _selectedId == e.GameId) ShowDetail(); }));
-        };
         _processTracker.Start();
     }
 
@@ -74,51 +70,95 @@ public sealed class MainForm : Form
     }
 
     /// <summary>
-    /// Native Windows title bars cannot host WinForms controls without replacing
-    /// the frame and losing system features.  The system menu is Windows' native
-    /// extension point for title-bar commands (app icon/right click/Alt+Space).
+    /// Adds a traditional Windows menu bar below the native caption.  The
+    /// caption remains an ordinary Windows non-client title bar, so system
+    /// controls, snapping, resizing, and the system menu stay untouched.
     /// </summary>
-    private void BuildNativeSystemMenu()
+    private void BuildNativeMenu()
     {
-        if (_nativeSystemMenuBuilt || !IsHandleCreated) return;
-        var systemMenu = GetSystemMenu(Handle, false);
-        if (systemMenu == IntPtr.Zero) return;
-
-        var versions = CreatePopupMenu();
-        var languages = CreatePopupMenu();
-        if (versions == IntPtr.Zero || languages == IntPtr.Zero) return;
+        if (_nativeMenuBuilt || !IsHandleCreated) return;
+        var menu = CreateMenu();
+        var launcherMenu = CreatePopupMenu();
+        var languageMenu = CreatePopupMenu();
+        if (menu == IntPtr.Zero || launcherMenu == IntPtr.Zero || languageMenu == IntPtr.Zero) return;
         _nativeMenuCommands.Clear();
-
-        var current = Application.ExecutablePath;
-        var launchers = Directory.EnumerateFiles(_store.Paths.Root, "Launcher_*.exe")
-            .Select(path => new { Path = path, Match = Regex.Match(Path.GetFileNameWithoutExtension(path), @"^Launcher_(?<version>[0-9]+(?:_[0-9]+)*(?:a[0-9]*)?)$", RegexOptions.IgnoreCase) })
-            .Where(item => item.Match.Success)
-            .OrderByDescending(item => item.Match.Groups["version"].Value, StringComparer.OrdinalIgnoreCase)
+        var current = Path.GetFullPath(Application.ExecutablePath);
+        var candidates = Directory.EnumerateFiles(_store.Paths.Root, "Launcher_*.exe")
+            .Select(ParseLauncherChoice)
+            .OfType<LauncherChoice>()
             .ToList();
-        if (launchers.Count == 0) AppendMenu(versions, MfString, 0, "No published versions found");
-        for (var index = 0; index < launchers.Count; index++)
+        // Keep every stable release, plus precisely one newest alpha build.
+        var launchers = candidates.Where(item => !item.IsPreview)
+            .OrderByDescending(item => item.SortKey, StringComparer.Ordinal)
+            .Concat(candidates.Where(item => item.IsPreview).OrderByDescending(item => item.SortKey, StringComparer.Ordinal).Take(1))
+            .ToList();
+        if (launchers.Count == 0)
         {
-            var command = LauncherCommandBase + index;
-            var launcher = launchers[index].Path;
-            var label = launchers[index].Match.Groups["version"].Value.Replace('_', '.');
-            if (string.Equals(Path.GetFullPath(launcher), Path.GetFullPath(current), StringComparison.OrdinalIgnoreCase)) label += " (current)";
-            AppendMenu(versions, MfString | (string.Equals(Path.GetFullPath(launcher), Path.GetFullPath(current), StringComparison.OrdinalIgnoreCase) ? MfChecked : 0), (nuint)command, label);
-            _nativeMenuCommands[command] = () => RestartWithLauncher(launcher);
+            AppendMenu(launcherMenu, MfString, 0, "No published versions found");
+        }
+        else
+        {
+            for (var index = 0; index < launchers.Count; index++)
+            {
+                var item = launchers[index];
+                var launcher = item.Path;
+                var isCurrent = string.Equals(Path.GetFullPath(launcher), current, StringComparison.OrdinalIgnoreCase);
+                var command = LauncherCommandBase + index;
+                AppendMenu(launcherMenu, MfString | (isCurrent ? MfChecked : 0), (nuint)command, isCurrent ? item.Label + " (current)" : item.Label);
+                _nativeMenuCommands[command] = () => RestartWithLauncher(launcher);
+            }
         }
 
         var choices = new[] { ("en", "English"), ("zh-Hant", "Traditional Chinese"), ("zh-Hans", "Simplified Chinese"), ("ja", "Japanese") };
         for (var index = 0; index < choices.Length; index++)
         {
-            var command = LanguageCommandBase + index;
             var choice = choices[index];
-            AppendMenu(languages, MfString | (string.Equals(_store.Data.Settings.Language, choice.Item1, StringComparison.OrdinalIgnoreCase) ? MfChecked : 0), (nuint)command, choice.Item2);
+            var command = LanguageCommandBase + index;
+            var selected = string.Equals(_store.Data.Settings.Language, choice.Item1, StringComparison.OrdinalIgnoreCase);
+            AppendMenu(languageMenu, MfString | (selected ? MfChecked : 0), (nuint)command, choice.Item2);
             _nativeMenuCommands[command] = () => ChangeUiLanguage(choice.Item1);
         }
+        AppendMenu(menu, MfPopup, (nuint)launcherMenu, "&Version");
+        AppendMenu(menu, MfPopup, (nuint)languageMenu, "&Language");
+        if (!SetMenu(Handle, menu)) { DestroyMenu(menu); return; }
+        _nativeMenu = menu;
+        _nativeMenuBuilt = true;
+        DrawMenuBar(Handle);
+    }
 
-        AppendMenu(systemMenu, MfSeparator, 0, null);
-        AppendMenu(systemMenu, MfPopup, (nuint)versions, "Launcher version");
-        AppendMenu(systemMenu, MfPopup, (nuint)languages, "UI language");
-        _nativeSystemMenuBuilt = true;
+    private static LauncherChoice? ParseLauncherChoice(string path)
+    {
+        var match = Regex.Match(Path.GetFileNameWithoutExtension(path), @"^Launcher_(?<core>[0-9]+(?:_[0-9]+)*)(?<alpha>a[0-9]*)?$", RegexOptions.IgnoreCase);
+        if (!match.Success) return null;
+        var preview = match.Groups["alpha"].Success;
+        var alphaNumber = preview && int.TryParse(match.Groups["alpha"].Value[1..], out var value) ? value : 0;
+        var numericKey = string.Join('.', match.Groups["core"].Value.Split('_').Select(part => int.Parse(part).ToString("D8")));
+        // The key is used only inside a matching version family; alpha sequence
+        // is sufficient to choose the newest test build of the highest version.
+        return new LauncherChoice(path, (match.Groups["core"].Value + match.Groups["alpha"].Value).Replace('_', '.'), preview, numericKey + $".{alphaNumber:D8}");
+    }
+
+    private void HideNativeMenu()
+    {
+        if (_nativeMenu == IntPtr.Zero || !IsHandleCreated) return;
+        SetMenu(Handle, IntPtr.Zero);
+        DrawMenuBar(Handle);
+    }
+
+    private void ShowNativeMenu()
+    {
+        if (!_nativeMenuBuilt) { BuildNativeMenu(); return; }
+        if (!IsHandleCreated) return;
+        SetMenu(Handle, _nativeMenu);
+        DrawMenuBar(Handle);
+    }
+
+    private void DetachNativeMenu()
+    {
+        if (_nativeMenu == IntPtr.Zero) return;
+        if (IsHandleCreated) SetMenu(Handle, IntPtr.Zero);
+        DestroyMenu(_nativeMenu);
+        _nativeMenu = IntPtr.Zero;
     }
 
     private void RestartWithLauncher(string launcher)
@@ -174,6 +214,7 @@ public sealed class MainForm : Form
                 // Set this first so native messages produced by the transition are
                 // consistently treated as fullscreen messages.
                 _fullScreen = true;
+                HideNativeMenu();
                 FormBorderStyle = FormBorderStyle.None;
                 WindowState = FormWindowState.Maximized;
             }
@@ -183,6 +224,7 @@ public sealed class MainForm : Form
                 FormBorderStyle = _restoreBorderStyle;
                 Bounds = _restoreBounds;
                 _fullScreen = false;
+                ShowNativeMenu();
             }
         }
         finally { _suppressResizeLayout = false; }
@@ -200,43 +242,6 @@ public sealed class MainForm : Form
     }
     private void EnforceAspect() { if (WindowState == FormWindowState.Normal && !_fullScreen && Width > 0) Height = Math.Max(MinimumSize.Height, (int)Math.Round(Width * 9d / 16d)); }
 
-    private void BuildTitleBar()
-    {
-        _titleBar.Controls.Clear();
-        _titleBar.MouseDown += TitleBarMouseDown;
-        _titleBar.DoubleClick += (_, _) => ToggleMaximize();
-        var caption = new Label { Text = "GAMESHELF", Left = 14, Top = 9, Width = 160, Height = 23, Font = new Font("Segoe UI", 10, FontStyle.Bold), AccessibleName = "GameShelf" };
-        caption.MouseDown += TitleBarMouseDown; caption.DoubleClick += (_, _) => ToggleMaximize();
-        var minimize = CreateWindowButton("—", "Minimize", (_, _) => WindowState = FormWindowState.Minimized);
-        var maximize = CreateWindowButton("□", "Maximize or restore", (_, _) => ToggleMaximize());
-        var close = CreateWindowButton("×", "Close", (_, _) => Close());
-        _titleBar.Controls.AddRange([caption, minimize, maximize, close]);
-        void Position()
-        {
-            close.Location = new Point(_titleBar.Width - 42, 4); maximize.Location = new Point(_titleBar.Width - 84, 4); minimize.Location = new Point(_titleBar.Width - 126, 4);
-        }
-        Position(); _titleBar.Resize += (_, _) => Position();
-    }
-    private Button CreateWindowButton(string glyph, string description, EventHandler handler)
-    {
-        var button = new Button { Text = glyph, Width = 38, Height = 30, AccessibleName = description, TabStop = true, FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false, Font = new Font("Segoe UI Symbol", 14, FontStyle.Bold), Tag = "window-control" };
-        StyleWindowButton(button); button.Click += handler; new ToolTip().SetToolTip(button, description); return button;
-    }
-    private void StyleWindowButton(Button button)
-    {
-        var close = button.Text == "×";
-        button.ForeColor = Color.White;
-        button.BackColor = close ? Color.FromArgb(184, 58, 58) : Color.FromArgb(49, 51, 53);
-        button.FlatAppearance.BorderSize = 0;
-    }
-    private void ToggleMaximize() => WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
-    private void TitleBarMouseDown(object? sender, MouseEventArgs e)
-    {
-        if (e.Button != MouseButtons.Left || _fullScreen) return;
-        ReleaseCapture(); SendMessage(Handle, 0xA1, (IntPtr)2, IntPtr.Zero);
-    }
-    [DllImport("user32.dll")] private static extern bool ReleaseCapture();
-    [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect { public int Left; public int Top; public int Right; public int Bottom; }
     private int ResizeHitTest(Point point)
@@ -249,7 +254,7 @@ public sealed class MainForm : Form
     protected override void WndProc(ref Message m)
     {
         const int WmSetCursor = 0x20, WmNcHitTest = 0x84, WmSizing = 0x214, HtClient = 1;
-        if (m.Msg == WmSysCommand && _nativeMenuCommands.TryGetValue((int)m.WParam, out var command))
+        if (m.Msg == WmCommand && _nativeMenuCommands.TryGetValue((int)((long)m.WParam & 0xffff), out var command))
         {
             command();
             return;
@@ -283,9 +288,13 @@ public sealed class MainForm : Form
         m.Result = (IntPtr)ResizeHitTest(point);
     }
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr GetSystemMenu(IntPtr window, bool revert);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "AppendMenuW")] private static extern bool AppendMenu(IntPtr menu, uint flags, nuint identifier, string? text);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "AppendMenuW")]
+    private static extern bool AppendMenu(IntPtr menu, uint flags, nuint identifier, string? text);
+    [DllImport("user32.dll")] private static extern IntPtr CreateMenu();
     [DllImport("user32.dll")] private static extern IntPtr CreatePopupMenu();
+    [DllImport("user32.dll")] private static extern bool SetMenu(IntPtr window, IntPtr menu);
+    [DllImport("user32.dll")] private static extern bool DrawMenuBar(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool DestroyMenu(IntPtr menu);
 
     // Dark styling is a product constant; savedata no longer carries a theme.
     // Existing layout helpers use this compile-time value while their dark-only
@@ -295,7 +304,6 @@ public sealed class MainForm : Form
     {
         BackColor = Color.FromArgb(27, 29, 30); ForeColor = Color.FromArgb(181, 228, 245);
         _top.BackColor = Color.FromArgb(19, 20, 20); _content.BackColor = BackColor;
-        _titleBar.BackColor = Color.FromArgb(12, 13, 14);
         RestyleButtons(this);
         ApplyTextTheme(this);
     }
@@ -303,7 +311,7 @@ public sealed class MainForm : Form
     {
         foreach (Control child in parent.Controls)
         {
-            if (child is Button button) { if (Equals(button.Tag, "window-control")) StyleWindowButton(button); else StyleButton(button); }
+            if (child is Button button) StyleButton(button);
             RestyleButtons(child);
         }
     }
@@ -760,10 +768,8 @@ public sealed class MainForm : Form
         var image = new PictureBox { Width = S(285), Height = S(380), Anchor = AnchorStyles.Top | (narrow ? AnchorStyles.Left : AnchorStyles.Right), Margin = new Padding(0), SizeMode = PictureBoxSizeMode.StretchImage, Image = LoadImage(g) };
         page.Controls.Add(image, 0, 0);
         var headline = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true, Padding = new Padding(narrow ? 0 : S(28), 0, 0, 0), BackColor = page.BackColor };
-        var gameIsRunning = _processTracker.RefreshGameState(g);
-        var play = CreateIconButton(gameIsRunning ? "✕" : "▶", gameIsRunning ? "Stop game" : "Launch game", (_, _) => ToggleGameProcess(g));
-        play.Enabled = gameIsRunning || PathRules.IsValidGameExe(gameAbsolutePath); play.Width = S(132); play.Height = S(92); play.Font = new Font("Segoe UI Symbol", S(36), FontStyle.Bold);
-        if (gameIsRunning) { play.BackColor = Color.FromArgb(76, 145, 217); play.FlatAppearance.BorderColor = Color.FromArgb(133, 190, 244); }
+        var play = CreateIconButton("▶", "Launch game", (_, _) => ToggleGameProcess(g));
+        play.Enabled = PathRules.IsValidGameExe(gameAbsolutePath); play.Width = S(132); play.Height = S(92); play.Font = new Font("Segoe UI Symbol", S(36), FontStyle.Bold);
         var numberAndPlay = new FlowLayoutPanel { AutoSize = true, Height = S(105), WrapContents = false, Margin = Padding.Empty, BackColor = page.BackColor };
         numberAndPlay.Controls.Add(new Label { Text = $"#{g.Id}", Width = S(300), Height = S(92), TextAlign = ContentAlignment.MiddleLeft, Font = new Font(Font.FontFamily, S(47), FontStyle.Bold), ForeColor = Color.White }); if (play.Enabled) numberAndPlay.Controls.Add(play);
         headline.Controls.Add(numberAndPlay);
@@ -812,7 +818,17 @@ public sealed class MainForm : Form
             var chip = FilterChip($"{dimension.Name} : {value}"); chip.Margin = new Padding(0, S(3), 0, S(3)); chip.MaximumSize = new Size(headlineContentWidth, 0); tagChips.Add(chip);
         }
         var tagHeight = Math.Max(S(38), tagChips.Sum(chip => chip.PreferredSize.Height + chip.Margin.Vertical));
-        var firstHeight = S(104) + titleMeasure.Height + S(16) + tagHeight;
+        var contentFirstHeight = S(104) + titleMeasure.Height + S(16) + tagHeight;
+        // A portrait cover should never collapse below this presentation size on
+        // a normally sized window. On narrow windows it remains bounded by its
+        // hidden 1A column so the 3:4 artwork cannot overlap 1B.
+        var coverMinimumHeight = S(480);
+        var coverColumnMaximumHeight = Math.Max(contentFirstHeight, (imageColumnWidth - S(24)) * 4 / 3);
+        var firstHeight = Math.Max(contentFirstHeight, Math.Min(coverMinimumHeight, coverColumnMaximumHeight));
+        var expandedHeight = firstHeight - contentFirstHeight;
+        var numberRowHeight = S(104) + expandedHeight / 3;
+        var titleRowHeight = titleMeasure.Height + S(16) + expandedHeight / 3;
+        var tagRowHeight = tagHeight + expandedHeight - (expandedHeight / 3) * 2;
         var first = new TableLayoutPanel { ColumnCount = 2, Width = sectionWidth, Height = firstHeight, Margin = Padding.Empty, BackColor = page.BackColor };
         first.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, imageColumnWidth)); first.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, headlineWidth));
         var coverHeight = firstHeight; var coverWidth = coverHeight * 3 / 4;
@@ -820,16 +836,14 @@ public sealed class MainForm : Form
         coverHost.Controls.Add(new PictureBox { Width = coverWidth, Height = coverHeight, Left = (imageColumnWidth - coverWidth) / 2, Top = firstHeight - coverHeight, SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), AccessibleName = "Cover" });
         first.Controls.Add(coverHost, 0, 0);
         var headline = new TableLayoutPanel { ColumnCount = 1, RowCount = 3, Dock = DockStyle.Fill, Margin = new Padding(S(20), 0, 0, 0), BackColor = page.BackColor };
-        headline.RowStyles.Add(new RowStyle(SizeType.Absolute, S(104))); headline.RowStyles.Add(new RowStyle(SizeType.Absolute, titleMeasure.Height + S(16))); headline.RowStyles.Add(new RowStyle(SizeType.Absolute, tagHeight));
+        headline.RowStyles.Add(new RowStyle(SizeType.Absolute, numberRowHeight)); headline.RowStyles.Add(new RowStyle(SizeType.Absolute, titleRowHeight)); headline.RowStyles.Add(new RowStyle(SizeType.Absolute, tagRowHeight));
         var numberAndLaunch = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = page.BackColor };
         numberAndLaunch.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); numberAndLaunch.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         numberAndLaunch.Controls.Add(new Label { Text = $"#{game.Id}", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Font = new Font(Font.FontFamily, S(42), FontStyle.Bold), ForeColor = Color.White }, 0, 0);
-        var running = _processTracker.RefreshGameState(game);
-        if (running || gameValid)
+        if (gameValid)
         {
-            var launch = CreateIconButton(running ? "■" : "▶", running ? "Stop game" : "Launch game", (_, _) => ToggleGameProcess(game));
+            var launch = CreateIconButton("▶", "Launch game", (_, _) => ToggleGameProcess(game));
             launch.Anchor = AnchorStyles.None; launch.Width = S(132); launch.Height = S(92); launch.Font = new Font("Segoe UI Symbol", S(36), FontStyle.Bold);
-            if (running) { launch.BackColor = Color.FromArgb(76, 145, 217); launch.FlatAppearance.BorderColor = Color.FromArgb(133, 190, 244); }
             numberAndLaunch.Controls.Add(launch, 1, 0);
         }
         headline.Controls.Add(numberAndLaunch, 0, 0);
@@ -896,12 +910,6 @@ public sealed class MainForm : Form
     }
     private async void ToggleGameProcess(GameEntry game)
     {
-        if (_processTracker.IsRunning(game.Id))
-        {
-            try { _processTracker.RequestStop(game.Id); }
-            catch (Exception ex) { AppLog.Error("Launcher", $"Stop request failed for game {game.Id}.", ex); MessageBox.Show(ex.Message, "GameShelf", MessageBoxButtons.OK, MessageBoxIcon.Error); }
-            return;
-        }
         _store.NormalizeAndValidatePaths(); _store.Save();
         var resolvedGamePath = _store.ResolveGamePath(game.GamePath);
         if (!PathRules.IsValidGameExe(resolvedGamePath)) { AppLog.Warning("Launcher", $"Launch rejected for game {game.Id}: executable path is unavailable."); MessageBox.Show(_t["Missing path"]); return; }
@@ -1103,7 +1111,7 @@ public sealed class MainForm : Form
         ("glyph:⌂", "Library", "⌂"), ("glyph:✎", "Edit", "✎"), ("glyph:←", "Back / cancel", "←"), ("glyph:＋", "Add", "＋"),
         ("glyph:⇧", "Import", "⇧"), ("glyph:⇩", "Export", "⇩"), ("glyph:✓", "Save / confirm", "✓"), ("glyph:×", "Delete / clear", "×"),
         ("glyph:▣", "Choose file", "▣"), ("glyph:▤", "Choose folder", "▤"), ("glyph:✂", "Crop cover", "✂"), ("glyph:↻", "Reset", "↻"),
-        ("glyph:▶", "Launch game", "▶"), ("glyph:■", "Stop game", "■"), ("glyph:☷", "Library dimensions", "☷"), ("filter", "Filter", "")
+        ("glyph:▶", "Launch game", "▶"), ("glyph:☷", "Library dimensions", "☷"), ("filter", "Filter", "")
     ];
     private Control ButtonIconSection()
     {
@@ -1249,7 +1257,7 @@ public sealed class MainForm : Form
     }
     private void ExpandGlobalSection(GroupBox group, int width)
     {
-        group.Width = width - 20; group.Height = Math.Max(500, ClientSize.Height - _titleBar.Height - _top.Height - 115); group.Margin = new Padding(0, 0, 0, 28);
+        group.Width = width - 20; group.Height = Math.Max(500, ClientSize.Height - _top.Height - 115); group.Margin = new Padding(0, 0, 0, 28);
         var list = group.Controls.OfType<ListBox>().FirstOrDefault();
         if (list is not null) { list.Left = 26; list.Top = 58; list.Width = group.Width - 52; list.Height = group.Height - 190; list.Font = new Font(Font.FontFamily, 17, FontStyle.Bold); }
         var buttons = group.Controls.OfType<Button>().ToList();
