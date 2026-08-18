@@ -170,16 +170,15 @@ public sealed class GameProcessTracker : IDisposable
         catch (Exception ex) { _store.Log("Could not inspect a process-start event: " + ex.Message); }
     }
 
-    private void Attach(int gameId, Process process, bool mayLaunchChild = false)
+    private bool Attach(int gameId, Process process, bool mayLaunchChild = false)
     {
-        if (HasExited(process)) { process.Dispose(); return; }
+        if (HasExited(process)) { process.Dispose(); return false; }
         Process? previous = null;
         lock (_gate)
         {
-            if (_processes.TryGetValue(gameId, out previous) && !HasExited(previous) && previous.Id == process.Id) { process.Dispose(); return; }
+            if (_processes.TryGetValue(gameId, out previous) && !HasExited(previous) && previous.Id == process.Id) { process.Dispose(); return true; }
             _processes[gameId] = process;
         }
-        if (previous is not null && !ReferenceEquals(previous, process)) previous.Dispose();
         try
         {
             process.Exited += (_, _) =>
@@ -187,13 +186,31 @@ public sealed class GameProcessTracker : IDisposable
                 if (mayLaunchChild && TryAdoptChildProcess(gameId, process.Id)) return;
                 Detached(gameId, process);
             };
-            Remember(gameId, process);
             process.EnableRaisingEvents = true;
+            Remember(gameId, process);
+            if (previous is not null && !ReferenceEquals(previous, process)) previous.Dispose();
             StateChanged?.Invoke(this, new GameProcessStateChangedEventArgs(gameId, true));
             if (mayLaunchChild) ObserveChildProcess(gameId, process.Id);
             if (process.HasExited) Detached(gameId, process);
+            return true;
         }
-        catch (Exception ex) { _store.Log("Could not attach game process " + gameId + ": " + ex.Message); Detached(gameId, process); }
+        catch (Exception ex)
+        {
+            // Do not publish a false state transition here. In particular, an
+            // inaccessible region-launcher child used to make the detail page
+            // immediately query/attach again, causing a high-frequency rebuild.
+            lock (_gate)
+            {
+                if (_processes.TryGetValue(gameId, out var tracked) && ReferenceEquals(tracked, process))
+                {
+                    if (previous is not null && !HasExited(previous)) _processes[gameId] = previous;
+                    else _processes.Remove(gameId);
+                }
+            }
+            process.Dispose();
+            AppLog.Warning("ProcessTracker", $"Could not attach process {process.Id} for game {gameId}; keeping the prior tracker state.", ex);
+            return false;
+        }
     }
 
     private void Detached(int gameId, Process process)
@@ -249,19 +266,23 @@ public sealed class GameProcessTracker : IDisposable
             .Select(id => { try { return Process.GetProcessById(id); } catch { return null; } })
             .Where(process => process is not null && !HasExited(process!))
             .Cast<Process>()
-            .OrderByDescending(process => PathEquals(ProcessPath(process), target))
-            .ThenByDescending(ProcessHasWindow)
             .ToList();
         if (candidates.Count == 0)
         {
             AppLog.Debug("ProcessTracker", $"No descendant candidate found yet for game {gameId} under launcher pid {parentProcessId}.");
             return false;
         }
-        var adopted = candidates[0];
-        foreach (var candidate in candidates.Skip(1)) candidate.Dispose();
+        var matching = candidates.Where(process => PathEquals(ProcessPath(process), target)).OrderByDescending(ProcessHasWindow).ToList();
+        foreach (var candidate in candidates.Except(matching)) candidate.Dispose();
+        if (matching.Count == 0)
+        {
+            AppLog.Debug("ProcessTracker", $"Descendants found under launcher pid {parentProcessId}, but none matched game {gameId}'s registered executable yet.");
+            return false;
+        }
+        var adopted = matching[0];
+        foreach (var candidate in matching.Skip(1)) candidate.Dispose();
         AppLog.Information("ProcessTracker", $"Adopted launched child for game {gameId}: pid {adopted.Id}, '{ProcessPath(adopted)}'.");
-        Attach(gameId, adopted);
-        return true;
+        return Attach(gameId, adopted);
     }
     private bool TryRecoverRelatedProcess(GameEntry game, long launcherStartTicks)
     {
@@ -295,7 +316,18 @@ public sealed class GameProcessTracker : IDisposable
     private static string ProcessPath(Process process)
     {
         try { return process.MainModule?.FileName ?? ""; }
-        catch { return ""; }
+        catch { return ProcessPath(process.Id); }
+    }
+    private static string ProcessPath(int processId)
+    {
+        var handle = OpenProcess(0x1000, false, (uint)processId); // PROCESS_QUERY_LIMITED_INFORMATION
+        if (handle == IntPtr.Zero) return "";
+        try
+        {
+            var size = 32768u; var path = new StringBuilder((int)size);
+            return QueryFullProcessImageName(handle, 0, path, ref size) ? path.ToString() : "";
+        }
+        finally { CloseHandle(handle); }
     }
     private static bool HasExited(Process process) { try { return process.HasExited; } catch { return true; } }
     private static bool ProcessHasWindow(Process process) { try { return process.MainWindowHandle != IntPtr.Zero; } catch { return false; } }

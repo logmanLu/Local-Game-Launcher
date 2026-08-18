@@ -1,8 +1,13 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.1a` (alpha)
+**Current application patch:** `2.0.1a1` (alpha)
 
 ## Patch history
+
+### 2.0.1a1 (alpha)
+
+- Fixed a launch-time page-rebuild loop reported with game `#22`. The log showed an inaccessible, non-game descendant selected by the region-launcher hand-off; attachment failed and falsely emitted a process-state update, which rebuilt the detail page and retried roughly every 0.1 seconds. Region hand-off now accepts only a descendant whose native Windows image path exactly matches the registered game executable. Failed attachment restores the previous launcher tracker state and emits no UI state event.
+- Enlarged the vector icon editor and moved its tool palette and bottom actions down, giving the explanatory text a dedicated 150-pixel area so it is not truncated.
 
 ### 2.0.1a (alpha)
 
