@@ -1166,9 +1166,9 @@ public sealed class MainForm : Form
     }
     private string? EditStatusIcon(string vector, string color, string? fallbackGlyph = null)
     {
-        using var dialog = new Form { Text = "Vector icon editor", StartPosition = FormStartPosition.CenterParent, Size = new Size(760, 610), MinimumSize = new Size(680, 540), BackColor = Color.FromArgb(35, 38, 39), ForeColor = Color.White, Font = Font };
+        using var dialog = new Form { Text = "Vector icon editor", StartPosition = FormStartPosition.CenterParent, Size = new Size(760, 700), MinimumSize = new Size(680, 640), BackColor = Color.FromArgb(35, 38, 39), ForeColor = Color.White, Font = Font };
         var canvas = new StatusIconCanvas(StatusColorValue(color), vector, fallbackGlyph) { Left = 30, Top = 32, Width = 390, Height = 390, AccessibleName = "Status icon drawing canvas" };
-        var help = new Label { Left = 455, Top = 32, Width = string.IsNullOrWhiteSpace(fallbackGlyph) ? 255 : 155, Height = 105, Text = string.IsNullOrWhiteSpace(fallbackGlyph)
+        var help = new Label { Left = 455, Top = 32, Width = string.IsNullOrWhiteSpace(fallbackGlyph) ? 255 : 155, Height = 150, Text = string.IsNullOrWhiteSpace(fallbackGlyph)
             ? "Draw white vectors. The fill tool stores a seed point and fills its enclosed region using all white shapes as boundaries."
             : "The original button glyph is shown whenever there is no custom artwork (including after Clear). It is a reference preview; draw white vectors to replace it.", Font = new Font(Font.FontFamily, 12, FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
         Control? originalPreview = null;
@@ -1176,7 +1176,7 @@ public sealed class MainForm : Form
         {
             originalPreview = new Label { Text = fallbackGlyph, Left = 630, Top = 42, Width = 72, Height = 72, TextAlign = ContentAlignment.MiddleCenter, BackColor = StatusColorValue(color), ForeColor = Color.White, Font = new Font("Segoe UI Symbol", 32, FontStyle.Bold), AccessibleName = "Original button icon preview" };
         }
-        var tools = new FlowLayoutPanel { Left = 450, Top = 125, Width = 270, Height = 230, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, BackColor = dialog.BackColor };
+        var tools = new FlowLayoutPanel { Left = 450, Top = 200, Width = 270, Height = 245, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, BackColor = dialog.BackColor };
         Button ToolButton(string text, string tool)
         {
             var button = new Button { Text = text, Width = 124, Height = 46, Margin = new Padding(5), FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false, BackColor = Color.FromArgb(45, 119, 115), ForeColor = Color.White, Font = new Font(Font.FontFamily, 10, FontStyle.Bold) };
@@ -1186,6 +1186,8 @@ public sealed class MainForm : Form
         var clear = CreateIconButton("×", "Clear vector canvas", (_, _) => canvas.Clear()); clear.Left = 450; clear.Top = 380;
         var save = CreateIconButton("✓", "Save status icon", (_, _) => dialog.DialogResult = DialogResult.OK); save.Left = 556; save.Top = 380;
         var cancel = CreateIconButton("←", "Cancel", (_, _) => dialog.DialogResult = DialogResult.Cancel); cancel.Left = 662; cancel.Top = 380;
+        // Keep the descriptive text unobstructed; action controls live below the tool palette.
+        clear.Top = save.Top = cancel.Top = 470;
         dialog.Controls.AddRange([canvas, help, tools, clear, save, cancel]);
         if (originalPreview is not null) dialog.Controls.Add(originalPreview);
         return dialog.ShowDialog(this) == DialogResult.OK ? StatusIconVectors.Serialize(canvas.Shapes) : null;
