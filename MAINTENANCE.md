@@ -1,8 +1,13 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.1a3` (alpha)
+**Current application patch:** `2.0.1` (stable)
 
 ## Patch history
+
+### 2.0.1 (stable)
+
+- Stable consolidation of the 2.0.1 alpha sequence: native Windows title bar and menu-bar version/language controls, data-format compatibility normalization, dark-only presentation, and the simplified valid-path-only Launch action.
+- Stable builds use the `Information` log threshold by default; `GAMESHELF_LOG_LEVEL` can temporarily raise detail for diagnostics.
 
 ### 2.0.1a3 (alpha)
 
