@@ -1,8 +1,12 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.1a1` (alpha)
+**Current application patch:** `2.0.1a2` (alpha)
 
 ## Patch history
+
+### 2.0.1a2 (alpha)
+
+- Removed the Stop-game action completely. Game detail now always presents the normal Launch glyph when the registered game executable is valid, regardless of whether a tracked game process exists. The control is absent only when that executable path is invalid; it no longer changes colour or sends a close request to a game.
 
 ### 2.0.1a1 (alpha)
 
@@ -213,7 +217,7 @@ Each time a detail page opens, the game path is checked. A valid EXE forces the 
 
 Launching resolves the stored relative executable against `RcRootPath`, then uses the executable's directory as `WorkingDirectory`, matching the behavior of double-clicking that EXE in Explorer. If a region command is selected, GameShelf starts that command with the resolved executable as its final argument and still uses the game directory as the working directory.
 
-The detail launch control is event-driven: it is blue with a stop glyph while the tracked executable is running and returns to Play on its Windows exit event. GameShelf does not poll every few seconds. Opening a detail page performs one native process-image-path query for that exact executable and attaches when it is found; WMI process-start events remain an optional enhancement for games spawned by region launchers after GameShelf starts. Stop requests a normal application close, not a forced process kill.
+The detail launch control is always the normal Launch glyph when the registered executable path is valid, and is hidden when it is invalid. GameShelf does not expose a Stop-game action and never sends a close request to a game. Internal process tracking remains diagnostic only and does not alter the detail button.
 
 The edit page shows the current cover and places cover selection/cropping and save actions after the other settings. Choice controls are populated from direct `Selection<int>` items rather than delayed data binding, so the saved play status, game status, region alias, and tags are retained when edit opens. Status dropdowns display their current status color.
 

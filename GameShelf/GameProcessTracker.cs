@@ -17,8 +17,6 @@ public sealed class GameProcessTracker : IDisposable
     private ManagementEventWatcher? _startWatcher;
     private bool _disposed;
 
-    public event EventHandler<GameProcessStateChangedEventArgs>? StateChanged;
-
     public GameProcessTracker(DataStore store) => _store = store;
 
     public void Start()
@@ -39,28 +37,6 @@ public sealed class GameProcessTracker : IDisposable
             _startWatcher?.Dispose();
             _startWatcher = null;
         }
-    }
-
-    public bool IsRunning(int gameId)
-    {
-        lock (_gate)
-        {
-            if (!_processes.TryGetValue(gameId, out var process)) return false;
-            try { return !process.HasExited; }
-            catch { _processes.Remove(gameId); return false; }
-        }
-    }
-
-    /// <summary>One-shot native Windows query used when a detail page is opened; never a polling loop.</summary>
-    public bool RefreshGameState(GameEntry game)
-    {
-        if (IsRunning(game.Id)) return true;
-        var expectedPath = _store.ResolveGamePath(game.GamePath);
-        if (string.IsNullOrWhiteSpace(expectedPath)) return false;
-        var process = FindRunningProcessByImagePath(expectedPath);
-        if (process is null) return false;
-        Attach(game.Id, process);
-        return IsRunning(game.Id);
     }
 
     public void TrackLaunchedProcess(int gameId, bool directGameExecutable, Process? process)
@@ -93,24 +69,6 @@ public sealed class GameProcessTracker : IDisposable
         {
             AppLog.Warning("ProcessTracker", $"Could not track launched process for game {gameId}.", ex);
             process.Dispose();
-        }
-    }
-
-    public void RequestStop(int gameId)
-    {
-        Process? process;
-        lock (_gate) _processes.TryGetValue(gameId, out process);
-        if (process is null || HasExited(process)) return;
-        try
-        {
-            // This posts WM_CLOSE to a graphical game. State returns to Play only after its real exit event.
-            if (!process.CloseMainWindow()) throw new InvalidOperationException("The game does not currently expose a window that can receive a close request.");
-            AppLog.Information("ProcessTracker", $"Requested normal close for game {gameId}.");
-        }
-        catch (Exception ex)
-        {
-            AppLog.Error("ProcessTracker", $"Could not request stop for game {gameId}.", ex);
-            throw new InvalidOperationException("Could not request the game to stop: " + ex.Message, ex);
         }
     }
 
@@ -189,7 +147,6 @@ public sealed class GameProcessTracker : IDisposable
             process.EnableRaisingEvents = true;
             Remember(gameId, process);
             if (previous is not null && !ReferenceEquals(previous, process)) previous.Dispose();
-            StateChanged?.Invoke(this, new GameProcessStateChangedEventArgs(gameId, true));
             if (mayLaunchChild) ObserveChildProcess(gameId, process.Id);
             if (process.HasExited) Detached(gameId, process);
             return true;
@@ -222,7 +179,6 @@ public sealed class GameProcessTracker : IDisposable
         }
         process.Dispose();
         if (changed) Forget(gameId);
-        if (changed) StateChanged?.Invoke(this, new GameProcessStateChangedEventArgs(gameId, false));
     }
 
     private void Remember(int gameId, Process process)
@@ -336,22 +292,6 @@ public sealed class GameProcessTracker : IDisposable
         if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
         return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
     }
-    private static Process? FindRunningProcessByImagePath(string expectedPath)
-    {
-        foreach (var processId in AllProcessIds())
-        {
-            var handle = OpenProcess(0x1000, false, (uint)processId); // PROCESS_QUERY_LIMITED_INFORMATION
-            if (handle == IntPtr.Zero) continue;
-            try
-            {
-                var size = 32768u; var path = new StringBuilder((int)size);
-                if (QueryFullProcessImageName(handle, 0, path, ref size) && PathEquals(path.ToString(), expectedPath))
-                    try { return Process.GetProcessById(processId); } catch (ArgumentException) { }
-            }
-            finally { CloseHandle(handle); }
-        }
-        return null;
-    }
 
     public void Dispose()
     {
@@ -391,23 +331,6 @@ public sealed class GameProcessTracker : IDisposable
         }
     }
 
-    private static IEnumerable<int> AllProcessIds()
-    {
-        var snapshot = CreateToolhelp32Snapshot(0x00000002, 0);
-        if (snapshot == IntPtr.Zero || snapshot == new IntPtr(-1)) yield break;
-        try
-        {
-            var entry = new ProcessEntry32 { dwSize = (uint)Marshal.SizeOf<ProcessEntry32>() };
-            if (!Process32First(snapshot, ref entry)) yield break;
-            do
-            {
-                yield return (int)entry.th32ProcessID;
-                entry.dwSize = (uint)Marshal.SizeOf<ProcessEntry32>();
-            } while (Process32Next(snapshot, ref entry));
-        }
-        finally { CloseHandle(snapshot); }
-    }
-
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
     private struct ProcessEntry32
     {
@@ -424,10 +347,4 @@ public sealed class GameProcessTracker : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder executablePath, ref uint size);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool CloseHandle(IntPtr handle);
-}
-
-public sealed class GameProcessStateChangedEventArgs(int gameId, bool isRunning) : EventArgs
-{
-    public int GameId { get; } = gameId;
-    public bool IsRunning { get; } = isRunning;
 }

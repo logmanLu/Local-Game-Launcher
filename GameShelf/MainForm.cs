@@ -56,11 +56,6 @@ public sealed class MainForm : Form
         ResizeBegin += (_, _) => BeginInteractiveResize();
         ResizeEnd += (_, _) => EndInteractiveResize();
         Resize += (_, _) => QueueResponsiveLayout();
-        _processTracker.StateChanged += (_, e) =>
-        {
-            if (IsDisposed || !IsHandleCreated) return;
-            BeginInvoke((Action)(() => { if (!IsDisposed && _page == "detail" && _selectedId == e.GameId) ShowDetail(); }));
-        };
         _processTracker.Start();
     }
 
@@ -760,10 +755,8 @@ public sealed class MainForm : Form
         var image = new PictureBox { Width = S(285), Height = S(380), Anchor = AnchorStyles.Top | (narrow ? AnchorStyles.Left : AnchorStyles.Right), Margin = new Padding(0), SizeMode = PictureBoxSizeMode.StretchImage, Image = LoadImage(g) };
         page.Controls.Add(image, 0, 0);
         var headline = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true, Padding = new Padding(narrow ? 0 : S(28), 0, 0, 0), BackColor = page.BackColor };
-        var gameIsRunning = _processTracker.RefreshGameState(g);
-        var play = CreateIconButton(gameIsRunning ? "✕" : "▶", gameIsRunning ? "Stop game" : "Launch game", (_, _) => ToggleGameProcess(g));
-        play.Enabled = gameIsRunning || PathRules.IsValidGameExe(gameAbsolutePath); play.Width = S(132); play.Height = S(92); play.Font = new Font("Segoe UI Symbol", S(36), FontStyle.Bold);
-        if (gameIsRunning) { play.BackColor = Color.FromArgb(76, 145, 217); play.FlatAppearance.BorderColor = Color.FromArgb(133, 190, 244); }
+        var play = CreateIconButton("▶", "Launch game", (_, _) => ToggleGameProcess(g));
+        play.Enabled = PathRules.IsValidGameExe(gameAbsolutePath); play.Width = S(132); play.Height = S(92); play.Font = new Font("Segoe UI Symbol", S(36), FontStyle.Bold);
         var numberAndPlay = new FlowLayoutPanel { AutoSize = true, Height = S(105), WrapContents = false, Margin = Padding.Empty, BackColor = page.BackColor };
         numberAndPlay.Controls.Add(new Label { Text = $"#{g.Id}", Width = S(300), Height = S(92), TextAlign = ContentAlignment.MiddleLeft, Font = new Font(Font.FontFamily, S(47), FontStyle.Bold), ForeColor = Color.White }); if (play.Enabled) numberAndPlay.Controls.Add(play);
         headline.Controls.Add(numberAndPlay);
@@ -824,12 +817,10 @@ public sealed class MainForm : Form
         var numberAndLaunch = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = page.BackColor };
         numberAndLaunch.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); numberAndLaunch.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         numberAndLaunch.Controls.Add(new Label { Text = $"#{game.Id}", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Font = new Font(Font.FontFamily, S(42), FontStyle.Bold), ForeColor = Color.White }, 0, 0);
-        var running = _processTracker.RefreshGameState(game);
-        if (running || gameValid)
+        if (gameValid)
         {
-            var launch = CreateIconButton(running ? "■" : "▶", running ? "Stop game" : "Launch game", (_, _) => ToggleGameProcess(game));
+            var launch = CreateIconButton("▶", "Launch game", (_, _) => ToggleGameProcess(game));
             launch.Anchor = AnchorStyles.None; launch.Width = S(132); launch.Height = S(92); launch.Font = new Font("Segoe UI Symbol", S(36), FontStyle.Bold);
-            if (running) { launch.BackColor = Color.FromArgb(76, 145, 217); launch.FlatAppearance.BorderColor = Color.FromArgb(133, 190, 244); }
             numberAndLaunch.Controls.Add(launch, 1, 0);
         }
         headline.Controls.Add(numberAndLaunch, 0, 0);
@@ -896,12 +887,6 @@ public sealed class MainForm : Form
     }
     private async void ToggleGameProcess(GameEntry game)
     {
-        if (_processTracker.IsRunning(game.Id))
-        {
-            try { _processTracker.RequestStop(game.Id); }
-            catch (Exception ex) { AppLog.Error("Launcher", $"Stop request failed for game {game.Id}.", ex); MessageBox.Show(ex.Message, "GameShelf", MessageBoxButtons.OK, MessageBoxIcon.Error); }
-            return;
-        }
         _store.NormalizeAndValidatePaths(); _store.Save();
         var resolvedGamePath = _store.ResolveGamePath(game.GamePath);
         if (!PathRules.IsValidGameExe(resolvedGamePath)) { AppLog.Warning("Launcher", $"Launch rejected for game {game.Id}: executable path is unavailable."); MessageBox.Show(_t["Missing path"]); return; }
@@ -1103,7 +1088,7 @@ public sealed class MainForm : Form
         ("glyph:⌂", "Library", "⌂"), ("glyph:✎", "Edit", "✎"), ("glyph:←", "Back / cancel", "←"), ("glyph:＋", "Add", "＋"),
         ("glyph:⇧", "Import", "⇧"), ("glyph:⇩", "Export", "⇩"), ("glyph:✓", "Save / confirm", "✓"), ("glyph:×", "Delete / clear", "×"),
         ("glyph:▣", "Choose file", "▣"), ("glyph:▤", "Choose folder", "▤"), ("glyph:✂", "Crop cover", "✂"), ("glyph:↻", "Reset", "↻"),
-        ("glyph:▶", "Launch game", "▶"), ("glyph:■", "Stop game", "■"), ("glyph:☷", "Library dimensions", "☷"), ("filter", "Filter", "")
+        ("glyph:▶", "Launch game", "▶"), ("glyph:☷", "Library dimensions", "☷"), ("filter", "Filter", "")
     ];
     private Control ButtonIconSection()
     {
