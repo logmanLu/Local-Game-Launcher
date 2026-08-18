@@ -1,8 +1,19 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.1a2` (alpha)
+**Current application patch:** `2.0.1` (stable)
 
 ## Patch history
+
+### 2.0.1 (stable)
+
+- Stable consolidation of the 2.0.1 alpha sequence: native Windows title bar and menu-bar version/language controls, data-format compatibility normalization, dark-only presentation, and the simplified valid-path-only Launch action.
+- Stable builds use the `Information` log threshold by default; `GAMESHELF_LOG_LEVEL` can temporarily raise detail for diagnostics.
+
+### 2.0.1a3 (alpha)
+
+- Restored the ordinary Windows non-client title bar: Windows owns the app icon, system menu, caption dragging, snap layouts, resize borders, and minimize/maximize/close controls.
+- Added a traditional native Windows menu bar directly below the title bar. Click **Version** (or press `Alt+V`) to choose any existing stable `Launcher_<version>.exe` plus only the newest alpha build; click **Language** (or press `Alt+L`) to persist the selected UI language and restart. The menu is hidden in fullscreen and restored when fullscreen ends.
+- The portrait cover in game detail now has a 480-pixel minimum height when the window permits it. Any added Section 1 height is shared by the number/launch, title, and tag rows; narrow windows cap the cover to the 1A column rather than allowing it to overlap the right-side fields.
 
 ### 2.0.1a2 (alpha)
 
