@@ -1168,9 +1168,14 @@ public sealed class MainForm : Form
     {
         using var dialog = new Form { Text = "Vector icon editor", StartPosition = FormStartPosition.CenterParent, Size = new Size(760, 610), MinimumSize = new Size(680, 540), BackColor = Color.FromArgb(35, 38, 39), ForeColor = Color.White, Font = Font };
         var canvas = new StatusIconCanvas(StatusColorValue(color), vector, fallbackGlyph) { Left = 30, Top = 32, Width = 390, Height = 390, AccessibleName = "Status icon drawing canvas" };
-        var help = new Label { Left = 455, Top = 32, Width = 255, Height = 105, Text = string.IsNullOrWhiteSpace(fallbackGlyph)
+        var help = new Label { Left = 455, Top = 32, Width = string.IsNullOrWhiteSpace(fallbackGlyph) ? 255 : 155, Height = 105, Text = string.IsNullOrWhiteSpace(fallbackGlyph)
             ? "Draw white vectors. The fill tool stores a seed point and fills its enclosed region using all white shapes as boundaries."
             : "The original button glyph is shown whenever there is no custom artwork (including after Clear). It is a reference preview; draw white vectors to replace it.", Font = new Font(Font.FontFamily, 12, FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
+        Control? originalPreview = null;
+        if (!string.IsNullOrWhiteSpace(fallbackGlyph))
+        {
+            originalPreview = new Label { Text = fallbackGlyph, Left = 630, Top = 42, Width = 72, Height = 72, TextAlign = ContentAlignment.MiddleCenter, BackColor = StatusColorValue(color), ForeColor = Color.White, Font = new Font("Segoe UI Symbol", 32, FontStyle.Bold), AccessibleName = "Original button icon preview" };
+        }
         var tools = new FlowLayoutPanel { Left = 450, Top = 125, Width = 270, Height = 230, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, BackColor = dialog.BackColor };
         Button ToolButton(string text, string tool)
         {
@@ -1182,6 +1187,7 @@ public sealed class MainForm : Form
         var save = CreateIconButton("✓", "Save status icon", (_, _) => dialog.DialogResult = DialogResult.OK); save.Left = 556; save.Top = 380;
         var cancel = CreateIconButton("←", "Cancel", (_, _) => dialog.DialogResult = DialogResult.Cancel); cancel.Left = 662; cancel.Top = 380;
         dialog.Controls.AddRange([canvas, help, tools, clear, save, cancel]);
+        if (originalPreview is not null) dialog.Controls.Add(originalPreview);
         return dialog.ShowDialog(this) == DialogResult.OK ? StatusIconVectors.Serialize(canvas.Shapes) : null;
     }
     private void AddStatusTile(StatusKind kind)
