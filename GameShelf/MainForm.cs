@@ -818,7 +818,17 @@ public sealed class MainForm : Form
             var chip = FilterChip($"{dimension.Name} : {value}"); chip.Margin = new Padding(0, S(3), 0, S(3)); chip.MaximumSize = new Size(headlineContentWidth, 0); tagChips.Add(chip);
         }
         var tagHeight = Math.Max(S(38), tagChips.Sum(chip => chip.PreferredSize.Height + chip.Margin.Vertical));
-        var firstHeight = S(104) + titleMeasure.Height + S(16) + tagHeight;
+        var contentFirstHeight = S(104) + titleMeasure.Height + S(16) + tagHeight;
+        // A portrait cover should never collapse below this presentation size on
+        // a normally sized window. On narrow windows it remains bounded by its
+        // hidden 1A column so the 3:4 artwork cannot overlap 1B.
+        var coverMinimumHeight = S(480);
+        var coverColumnMaximumHeight = Math.Max(contentFirstHeight, (imageColumnWidth - S(24)) * 4 / 3);
+        var firstHeight = Math.Max(contentFirstHeight, Math.Min(coverMinimumHeight, coverColumnMaximumHeight));
+        var expandedHeight = firstHeight - contentFirstHeight;
+        var numberRowHeight = S(104) + expandedHeight / 3;
+        var titleRowHeight = titleMeasure.Height + S(16) + expandedHeight / 3;
+        var tagRowHeight = tagHeight + expandedHeight - (expandedHeight / 3) * 2;
         var first = new TableLayoutPanel { ColumnCount = 2, Width = sectionWidth, Height = firstHeight, Margin = Padding.Empty, BackColor = page.BackColor };
         first.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, imageColumnWidth)); first.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, headlineWidth));
         var coverHeight = firstHeight; var coverWidth = coverHeight * 3 / 4;
@@ -826,7 +836,7 @@ public sealed class MainForm : Form
         coverHost.Controls.Add(new PictureBox { Width = coverWidth, Height = coverHeight, Left = (imageColumnWidth - coverWidth) / 2, Top = firstHeight - coverHeight, SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), AccessibleName = "Cover" });
         first.Controls.Add(coverHost, 0, 0);
         var headline = new TableLayoutPanel { ColumnCount = 1, RowCount = 3, Dock = DockStyle.Fill, Margin = new Padding(S(20), 0, 0, 0), BackColor = page.BackColor };
-        headline.RowStyles.Add(new RowStyle(SizeType.Absolute, S(104))); headline.RowStyles.Add(new RowStyle(SizeType.Absolute, titleMeasure.Height + S(16))); headline.RowStyles.Add(new RowStyle(SizeType.Absolute, tagHeight));
+        headline.RowStyles.Add(new RowStyle(SizeType.Absolute, numberRowHeight)); headline.RowStyles.Add(new RowStyle(SizeType.Absolute, titleRowHeight)); headline.RowStyles.Add(new RowStyle(SizeType.Absolute, tagRowHeight));
         var numberAndLaunch = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = page.BackColor };
         numberAndLaunch.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); numberAndLaunch.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         numberAndLaunch.Controls.Add(new Label { Text = $"#{game.Id}", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Font = new Font(Font.FontFamily, S(42), FontStyle.Bold), ForeColor = Color.White }, 0, 0);
