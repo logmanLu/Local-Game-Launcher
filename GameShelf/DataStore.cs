@@ -18,6 +18,7 @@ public sealed class DataStore : IDisposable
         Directory.CreateDirectory(paths.ImagesDirectory);
         AppLog.Debug("DataStore", "Opening local database.");
         Data = Load();
+        UpgradeFormatIfNeeded();
         NormalizeAndValidatePaths();
         Save();
     }
@@ -35,6 +36,43 @@ public sealed class DataStore : IDisposable
             AppLog.Error("DataStore", "Could not read database.", ex);
             throw new InvalidOperationException("The savedata database is unreadable. See the log folder next to GameShelf.exe.", ex);
         }
+    }
+
+    /// <summary>
+    /// Applies safe, in-place schema upgrades. Unknown JSON properties are kept by
+    /// JsonExtensionData, and a copy is made before the first write of an older
+    /// format so a launcher from another release cannot silently destroy data.
+    /// </summary>
+    private void UpgradeFormatIfNeeded()
+    {
+        if (Data.Version <= 0) Data.Version = 1;
+        if (Data.Version == AppData.CurrentFormatVersion) return;
+        if (Data.Version > AppData.CurrentFormatVersion)
+        {
+            AppLog.Warning("DataStore", $"Savedata format v{Data.Version} is newer than this launcher (v{AppData.CurrentFormatVersion}); preserving unknown fields without downgrading it.");
+            return;
+        }
+
+        var backupDirectory = Path.Combine(_paths.DataDirectory, "backups");
+        try
+        {
+            Directory.CreateDirectory(backupDirectory);
+            var backup = Path.Combine(backupDirectory, $"gameshelf-before-v{Data.Version}-{DateTime.UtcNow:yyyyMMdd-HHmmss}.json");
+            if (File.Exists(_paths.DatabaseFile)) File.Copy(_paths.DatabaseFile, backup, overwrite: false);
+            AppLog.Information("DataStore", $"Backed up savedata format v{Data.Version} before migration: '{backup}'.");
+        }
+        catch (Exception ex)
+        {
+            // The loaded data remains usable; log this prominently because a later
+            // Save will still normalize the schema.
+            AppLog.Warning("DataStore", "Could not create the savedata migration backup.", ex);
+        }
+
+        var sourceVersion = Data.Version;
+        // v1 -> v2: permanent dark UI removes the Theme setting; the strongly
+        // typed object naturally omits it on save, while unknown future fields stay.
+        Data.Version = AppData.CurrentFormatVersion;
+        AppLog.Information("DataStore", $"Migrated savedata format v{sourceVersion} to v{Data.Version}.");
     }
 
     public void Save()
@@ -344,6 +382,13 @@ public sealed class DataStore : IDisposable
         if (!Data.SaveRoots.Any(root => root.Id == Defaults.SaveRootGameDirectoryId)) Data.SaveRoots.Insert(0, Defaults.SaveRoots().First());
         foreach (var d in Data.TagSchema) { d.Values ??= []; d.Values[0] = "none"; }
         Data.Settings ??= new AppSettings();
+        Data.Settings.Language = Data.Settings.Language?.Trim().ToLowerInvariant() switch
+        {
+            "ja" or "ja-jp" => "ja",
+            "zh-hans" or "zh-cn" or "zh-sg" => "zh-Hans",
+            "zh-hant" or "zh-tw" or "zh-hk" or "zh" => "zh-Hant",
+            _ => "en"
+        };
         Data.Settings.SelectedTagFilters ??= [];
         Data.Settings.HomeDisplayDimensionIds ??= [];
         Data.Settings.ButtonIcons ??= [];

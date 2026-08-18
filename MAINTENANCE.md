@@ -1,8 +1,15 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.0`
+**Current application patch:** `2.0.1a` (alpha)
 
 ## Patch history
+
+### 2.0.1a (alpha)
+
+- Region-command launches are now retained as tracked parent processes and make two bounded post-launch descendant checks (at 450 ms and 1.5 s). This fixes Locale Emulator-style launches such as game `#22`, where WMI process-start notifications are unavailable due to Windows access policy. Exact configured executable paths are preferred when a child is adopted; the process log records the launcher, candidate result, and adopted child.
+- The vector button-icon editor now previews the logical built-in button glyph whenever no custom vector artwork exists, including after Clear. Its bottom actions remain icon-only by design: `X` clears custom artwork, `✓` saves, and `←` discards.
+- The native Windows title-bar system menu (app icon, title-bar right click, or `Alt+Space`) now includes **Launcher version** and **UI language** submenus. Selecting a version starts that versioned `Launcher_<version>.exe` and closes the current process; choosing a UI language persists the setting and restarts to apply it. Normal Windows caption buttons, snapping, and window controls remain native.
+- Savedata format is now version 2. Older files are backed up under `savedata/backups/` before in-place normalization; unknown JSON fields are preserved for forward compatibility. The old persisted Theme setting is removed, and dark presentation is now permanent. UI language is persisted as `en`, `zh-Hant`, `zh-Hans`, or `ja`.
 
 ### 2.0.0
 
@@ -149,7 +156,7 @@ The top-level document (`AppData`) contains:
 
 | Field | Format / purpose |
 | --- | --- |
-| `Version` | Database format version; currently `1`. |
+| `Version` | Database format version; currently `2`. Older files are backed up to `savedata/backups/` before migration; unknown JSON fields are round-tripped for forward compatibility. |
 | `Settings` | Window state, last safe page/selected game, selected tag filters, the up-to-three Library-card dimensions, custom button vectors, and tracked running-process identities. Library and game-detail page state are restored at launch. |
 | `RcRootPath` | Absolute shared `rc` folder. `GamePath` values are relative to this folder. |
 | `SaveRoots` | Save-root mappings: an ID, display name, and `.` or Windows environment-variable path template. |

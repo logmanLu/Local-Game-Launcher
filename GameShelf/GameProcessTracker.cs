@@ -68,12 +68,32 @@ public sealed class GameProcessTracker : IDisposable
         if (process is null) return;
         try
         {
-            if (directGameExecutable) { Attach(gameId, process, mayLaunchChild: true); return; }
+            if (directGameExecutable)
+            {
+                AppLog.Information("ProcessTracker", $"Tracking directly launched game {gameId}: pid {process.Id}, '{ProcessPath(process)}'.");
+                Attach(gameId, process, mayLaunchChild: true);
+                return;
+            }
             var target = _store.ResolveGamePath(_store.GetGame(gameId).GamePath);
-            if (PathEquals(ProcessPath(process), target)) Attach(gameId, process);
-            else process.Dispose(); // A region launcher; its target is caught by the WMI start event.
+            if (PathEquals(ProcessPath(process), target))
+            {
+                AppLog.Information("ProcessTracker", $"Region command started the game executable directly for game {gameId}: pid {process.Id}.");
+                Attach(gameId, process);
+            }
+            else
+            {
+                // Region launchers such as Locale Emulator are parent processes.
+                // WMI start notifications are optional and commonly denied, therefore
+                // retain the parent and make bounded descendant checks after launch.
+                AppLog.Information("ProcessTracker", $"Tracking region launcher for game {gameId}: pid {process.Id}, '{ProcessPath(process)}'; target '{target}'.");
+                Attach(gameId, process, mayLaunchChild: true);
+            }
         }
-        catch { process.Dispose(); }
+        catch (Exception ex)
+        {
+            AppLog.Warning("ProcessTracker", $"Could not track launched process for game {gameId}.", ex);
+            process.Dispose();
+        }
     }
 
     public void RequestStop(int gameId)
@@ -211,23 +231,35 @@ public sealed class GameProcessTracker : IDisposable
     {
         try
         {
-            await Task.Delay(450);
-            TryAdoptChildProcess(gameId, parentProcessId);
+            // These are bounded launch-time checks, not periodic polling. Some
+            // locale/region launchers create the game after their own setup phase.
+            foreach (var delay in new[] { 450, 1500 })
+            {
+                await Task.Delay(delay);
+                if (TryAdoptChildProcess(gameId, parentProcessId)) return;
+            }
         }
         catch (Exception ex) { _store.Log("Could not inspect game child process " + gameId + ": " + ex.Message); }
     }
     private bool TryAdoptChildProcess(int gameId, int parentProcessId)
     {
         if (_disposed) return false;
+        var target = _store.ResolveGamePath(_store.GetGame(gameId).GamePath);
         var candidates = DescendantProcessIds(parentProcessId)
             .Select(id => { try { return Process.GetProcessById(id); } catch { return null; } })
             .Where(process => process is not null && !HasExited(process!))
             .Cast<Process>()
-            .OrderByDescending(ProcessHasWindow)
+            .OrderByDescending(process => PathEquals(ProcessPath(process), target))
+            .ThenByDescending(ProcessHasWindow)
             .ToList();
-        if (candidates.Count == 0) return false;
+        if (candidates.Count == 0)
+        {
+            AppLog.Debug("ProcessTracker", $"No descendant candidate found yet for game {gameId} under launcher pid {parentProcessId}.");
+            return false;
+        }
         var adopted = candidates[0];
         foreach (var candidate in candidates.Skip(1)) candidate.Dispose();
+        AppLog.Information("ProcessTracker", $"Adopted launched child for game {gameId}: pid {adopted.Id}, '{ProcessPath(adopted)}'.");
         Attach(gameId, adopted);
         return true;
     }

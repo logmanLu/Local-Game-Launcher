@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 
 namespace GameShelf;
 
@@ -27,6 +28,11 @@ public sealed class MainForm : Form
     // FormBorderStyle/WindowState changes emit Resize but not ResizeEnd. Suppress
     // resize handling around those programmatic transitions and refresh once after.
     private bool _suppressResizeLayout;
+    private const int WmSysCommand = 0x0112;
+    private const uint MfString = 0x0000, MfPopup = 0x0010, MfSeparator = 0x0800, MfChecked = 0x0008;
+    private const int LauncherCommandBase = 0x7000, LanguageCommandBase = 0x7200;
+    private readonly Dictionary<int, Action> _nativeMenuCommands = [];
+    private bool _nativeSystemMenuBuilt;
 
     public MainForm(DataStore store)
     {
@@ -39,6 +45,7 @@ public sealed class MainForm : Form
         KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => _processTracker.Dispose();
         Shown += (_, _) =>
         {
+            BuildNativeSystemMenu();
             if (!_fullScreen) return;
             // RestoreWindow runs before the native form handle exists, so its
             // fullscreen transition cannot queue the usual post-transition refresh.
@@ -64,6 +71,75 @@ public sealed class MainForm : Form
         Bounds = screen is null ? new Rectangle((Screen.PrimaryScreen!.WorkingArea.Width - 1280) / 2, (Screen.PrimaryScreen.WorkingArea.Height - 720) / 2, 1280, 720) : new Rectangle(s.WindowX, s.WindowY, s.WindowWidth, s.WindowHeight);
         if (s.IsMaximized) WindowState = FormWindowState.Maximized;
         if (s.IsFullscreen) ToggleFullscreen();
+    }
+
+    /// <summary>
+    /// Native Windows title bars cannot host WinForms controls without replacing
+    /// the frame and losing system features.  The system menu is Windows' native
+    /// extension point for title-bar commands (app icon/right click/Alt+Space).
+    /// </summary>
+    private void BuildNativeSystemMenu()
+    {
+        if (_nativeSystemMenuBuilt || !IsHandleCreated) return;
+        var systemMenu = GetSystemMenu(Handle, false);
+        if (systemMenu == IntPtr.Zero) return;
+
+        var versions = CreatePopupMenu();
+        var languages = CreatePopupMenu();
+        if (versions == IntPtr.Zero || languages == IntPtr.Zero) return;
+        _nativeMenuCommands.Clear();
+
+        var current = Application.ExecutablePath;
+        var launchers = Directory.EnumerateFiles(_store.Paths.Root, "Launcher_*.exe")
+            .Select(path => new { Path = path, Match = Regex.Match(Path.GetFileNameWithoutExtension(path), @"^Launcher_(?<version>[0-9]+(?:_[0-9]+)*(?:a[0-9]*)?)$", RegexOptions.IgnoreCase) })
+            .Where(item => item.Match.Success)
+            .OrderByDescending(item => item.Match.Groups["version"].Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (launchers.Count == 0) AppendMenu(versions, MfString, 0, "No published versions found");
+        for (var index = 0; index < launchers.Count; index++)
+        {
+            var command = LauncherCommandBase + index;
+            var launcher = launchers[index].Path;
+            var label = launchers[index].Match.Groups["version"].Value.Replace('_', '.');
+            if (string.Equals(Path.GetFullPath(launcher), Path.GetFullPath(current), StringComparison.OrdinalIgnoreCase)) label += " (current)";
+            AppendMenu(versions, MfString | (string.Equals(Path.GetFullPath(launcher), Path.GetFullPath(current), StringComparison.OrdinalIgnoreCase) ? MfChecked : 0), (nuint)command, label);
+            _nativeMenuCommands[command] = () => RestartWithLauncher(launcher);
+        }
+
+        var choices = new[] { ("en", "English"), ("zh-Hant", "Traditional Chinese"), ("zh-Hans", "Simplified Chinese"), ("ja", "Japanese") };
+        for (var index = 0; index < choices.Length; index++)
+        {
+            var command = LanguageCommandBase + index;
+            var choice = choices[index];
+            AppendMenu(languages, MfString | (string.Equals(_store.Data.Settings.Language, choice.Item1, StringComparison.OrdinalIgnoreCase) ? MfChecked : 0), (nuint)command, choice.Item2);
+            _nativeMenuCommands[command] = () => ChangeUiLanguage(choice.Item1);
+        }
+
+        AppendMenu(systemMenu, MfSeparator, 0, null);
+        AppendMenu(systemMenu, MfPopup, (nuint)versions, "Launcher version");
+        AppendMenu(systemMenu, MfPopup, (nuint)languages, "UI language");
+        _nativeSystemMenuBuilt = true;
+    }
+
+    private void RestartWithLauncher(string launcher)
+    {
+        if (string.Equals(Path.GetFullPath(launcher), Path.GetFullPath(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase)) return;
+        try
+        {
+            AppLog.Information("UI", $"Restarting GameShelf with selected launcher '{launcher}'.");
+            Process.Start(new ProcessStartInfo(launcher) { WorkingDirectory = _store.Paths.Root, UseShellExecute = true });
+            Close();
+        }
+        catch (Exception ex) { AppLog.Error("UI", "Could not restart with the selected launcher.", ex); MessageBox.Show("Could not restart with the selected launcher. See the log for details."); }
+    }
+
+    private void ChangeUiLanguage(string language)
+    {
+        if (string.Equals(_store.Data.Settings.Language, language, StringComparison.OrdinalIgnoreCase)) return;
+        _store.Data.Settings.Language = language;
+        _store.Save();
+        AppLog.Information("UI", $"Changed UI language to '{language}', restarting to apply it.");
+        Application.Restart();
     }
 
     private void PersistWindow()
@@ -149,8 +225,8 @@ public sealed class MainForm : Form
     private void StyleWindowButton(Button button)
     {
         var close = button.Text == "×";
-        button.ForeColor = IsDarkTheme ? Color.White : Color.Black;
-        button.BackColor = close ? Color.FromArgb(184, 58, 58) : IsDarkTheme ? Color.FromArgb(49, 51, 53) : Color.FromArgb(222, 222, 222);
+        button.ForeColor = Color.White;
+        button.BackColor = close ? Color.FromArgb(184, 58, 58) : Color.FromArgb(49, 51, 53);
         button.FlatAppearance.BorderSize = 0;
     }
     private void ToggleMaximize() => WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
@@ -173,6 +249,11 @@ public sealed class MainForm : Form
     protected override void WndProc(ref Message m)
     {
         const int WmSetCursor = 0x20, WmNcHitTest = 0x84, WmSizing = 0x214, HtClient = 1;
+        if (m.Msg == WmSysCommand && _nativeMenuCommands.TryGetValue((int)m.WParam, out var command))
+        {
+            command();
+            return;
+        }
         if (m.Msg == WmSizing && !_fullScreen && WindowState == FormWindowState.Normal && m.LParam != IntPtr.Zero)
         {
             var rect = Marshal.PtrToStructure<NativeRect>(m.LParam); var width = Math.Max(MinimumSize.Width, rect.Right - rect.Left); var height = Math.Max(MinimumSize.Height, (int)Math.Round(width * 9d / 16d));
@@ -202,13 +283,19 @@ public sealed class MainForm : Form
         m.Result = (IntPtr)ResizeHitTest(point);
     }
 
-    private bool IsDarkTheme => true;
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr GetSystemMenu(IntPtr window, bool revert);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "AppendMenuW")] private static extern bool AppendMenu(IntPtr menu, uint flags, nuint identifier, string? text);
+    [DllImport("user32.dll")] private static extern IntPtr CreatePopupMenu();
+
+    // Dark styling is a product constant; savedata no longer carries a theme.
+    // Existing layout helpers use this compile-time value while their dark-only
+    // colours are progressively shared by editor controls.
+    private const bool IsDarkTheme = true;
     private void ApplyTheme()
     {
-        var dark = IsDarkTheme;
-        BackColor = dark ? Color.FromArgb(27, 29, 30) : Color.FromArgb(255, 249, 232); ForeColor = dark ? Color.FromArgb(181, 228, 245) : Color.FromArgb(48, 110, 132);
-        _top.BackColor = dark ? Color.FromArgb(19, 20, 20) : Color.FromArgb(255, 239, 202); _content.BackColor = BackColor;
-        _titleBar.BackColor = dark ? Color.FromArgb(12, 13, 14) : Color.FromArgb(238, 238, 238);
+        BackColor = Color.FromArgb(27, 29, 30); ForeColor = Color.FromArgb(181, 228, 245);
+        _top.BackColor = Color.FromArgb(19, 20, 20); _content.BackColor = BackColor;
+        _titleBar.BackColor = Color.FromArgb(12, 13, 14);
         RestyleButtons(this);
         ApplyTextTheme(this);
     }
@@ -222,29 +309,29 @@ public sealed class MainForm : Form
     }
     private void ApplyTextTheme(Control parent)
     {
-        var color = IsDarkTheme ? Color.White : Color.Black;
+        var color = Color.White;
         foreach (Control child in parent.Controls)
         {
             if (child is GroupBox group) { group.ForeColor = color; group.Font = new Font(group.Font, group.Font.Style | FontStyle.Bold); }
             else if (child is Label label && label.Text != "●") { label.ForeColor = color; label.Font = new Font(label.Font, label.Font.Style | FontStyle.Bold); }
             else if (child is LinkLabel link) { link.LinkColor = color; link.Font = new Font(link.Font, link.Font.Style | FontStyle.Bold); }
-            else if (child is TextBox input) { input.BackColor = IsDarkTheme ? Color.FromArgb(25, 25, 25) : Color.White; input.ForeColor = color; input.Font = new Font(input.Font, input.Font.Style | FontStyle.Bold); }
-            else if (child is ComboBox combo) { combo.BackColor = IsDarkTheme ? Color.FromArgb(25, 25, 25) : Color.White; combo.ForeColor = color; combo.Font = new Font(combo.Font, combo.Font.Style | FontStyle.Bold); }
+            else if (child is TextBox input) { input.BackColor = Color.FromArgb(25, 25, 25); input.ForeColor = color; input.Font = new Font(input.Font, input.Font.Style | FontStyle.Bold); }
+            else if (child is ComboBox combo) { combo.BackColor = Color.FromArgb(25, 25, 25); combo.ForeColor = color; combo.Font = new Font(combo.Font, combo.Font.Style | FontStyle.Bold); }
             ApplyTextTheme(child);
         }
     }
 
     private void StyleButton(Button button)
     {
-        var dark = IsDarkTheme;
         button.UseVisualStyleBackColor = false;
-        button.BackColor = ButtonColor(button.Tag as string ?? button.Text, dark);
-        button.ForeColor = dark ? Color.FromArgb(200, 239, 250) : Color.FromArgb(255, 250, 224);
+        button.BackColor = ButtonColor(button.Tag as string ?? button.Text);
+        button.ForeColor = Color.FromArgb(200, 239, 250);
         button.FlatStyle = FlatStyle.Flat;
-        button.FlatAppearance.BorderColor = dark ? ControlPaint.Light(button.BackColor, .35f) : ControlPaint.Dark(button.BackColor, .25f);
+        button.FlatAppearance.BorderColor = ControlPaint.Light(button.BackColor, .35f);
         button.FlatAppearance.BorderSize = 2;
         button.Font = new Font("Segoe UI Symbol", 30f, FontStyle.Bold);
     }
+    private static Color ButtonColor(string glyph) => ButtonColor(glyph, true);
     private static Color ButtonColor(string glyph, bool dark) => glyph switch
     {
         "×" => dark ? Color.FromArgb(166, 59, 73) : Color.FromArgb(199, 72, 83),
@@ -1028,7 +1115,11 @@ public sealed class MainForm : Form
         menu.Items.Add("Edit", null, (_, _) =>
         {
             _store.Data.Settings.ButtonIcons.TryGetValue(item.Key, out var current);
-            var vector = EditStatusIcon(current ?? "", ColorTranslator.ToHtml(ButtonColor(item.Glyph, IsDarkTheme))); if (vector is null) return;
+            // Button glyphs are font icons by default, not stored vectors. Pass
+            // the default glyph to the editor so an empty/custom-cleared canvas
+            // still shows the original button icon as a visual reference.
+            var fallbackGlyph = string.IsNullOrWhiteSpace(item.Glyph) ? "▼" : item.Glyph;
+            var vector = EditStatusIcon(current ?? "", ColorTranslator.ToHtml(ButtonColor(item.Glyph)), fallbackGlyph); if (vector is null) return;
             _store.Data.Settings.ButtonIcons[item.Key] = vector; _store.Save(); ShowGlobal();
         });
         if (_store.Data.Settings.ButtonIcons.ContainsKey(item.Key)) menu.Items.Add("Restore glyph", null, (_, _) => { _store.Data.Settings.ButtonIcons.Remove(item.Key); _store.Save(); ShowGlobal(); });
@@ -1073,11 +1164,13 @@ public sealed class MainForm : Form
         if (!TryParseRgb(value, out var hex)) { MessageBox.Show("Enter three RGB values from 0 to 255, for example: 83,180,107."); return null; }
         return hex;
     }
-    private string? EditStatusIcon(string vector, string color)
+    private string? EditStatusIcon(string vector, string color, string? fallbackGlyph = null)
     {
         using var dialog = new Form { Text = "Vector icon editor", StartPosition = FormStartPosition.CenterParent, Size = new Size(760, 610), MinimumSize = new Size(680, 540), BackColor = Color.FromArgb(35, 38, 39), ForeColor = Color.White, Font = Font };
-        var canvas = new StatusIconCanvas(StatusColorValue(color), vector) { Left = 30, Top = 32, Width = 390, Height = 390, AccessibleName = "Status icon drawing canvas" };
-        var help = new Label { Left = 455, Top = 32, Width = 255, Height = 85, Text = "Draw white vectors. The fill tool stores a seed point and fills its enclosed region using all white shapes as boundaries.", Font = new Font(Font.FontFamily, 12, FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
+        var canvas = new StatusIconCanvas(StatusColorValue(color), vector, fallbackGlyph) { Left = 30, Top = 32, Width = 390, Height = 390, AccessibleName = "Status icon drawing canvas" };
+        var help = new Label { Left = 455, Top = 32, Width = 255, Height = 105, Text = string.IsNullOrWhiteSpace(fallbackGlyph)
+            ? "Draw white vectors. The fill tool stores a seed point and fills its enclosed region using all white shapes as boundaries."
+            : "The original button glyph is shown whenever there is no custom artwork (including after Clear). It is a reference preview; draw white vectors to replace it.", Font = new Font(Font.FontFamily, 12, FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
         var tools = new FlowLayoutPanel { Left = 450, Top = 125, Width = 270, Height = 230, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, BackColor = dialog.BackColor };
         Button ToolButton(string text, string tool)
         {
