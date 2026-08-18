@@ -1,8 +1,13 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.1a2` (alpha)
+**Current application patch:** `2.0.1a3` (alpha)
 
 ## Patch history
+
+### 2.0.1a3 (alpha)
+
+- Replaced the hidden native-system-menu selectors with a visible custom non-client title bar. Launcher version and UI language are now real drop-down controls directly in the window title bar. Selecting a launcher version starts that executable and closes the current process; selecting a language persists it and restarts GameShelf.
+- The borderless title bar returns `HTCAPTION` only for its non-interactive background, so Windows continues to provide drag-to-snap behaviour; its edges and corners use `WM_NCHITTEST`/`WM_SIZING` for the existing resize cursors and locked 16:9 normal-window size. Minimize, maximize/restore, and close are explicit title-bar controls. Fullscreen hides this custom title bar.
 
 ### 2.0.1a2 (alpha)
 
@@ -198,7 +203,7 @@ The interface uses a permanent dark palette and bold English UI text. Data strin
 - `Esc`: Leave fullscreen.
 - `Alt+F4`: Close.
 
-The standard Windows title bar supplies minimize, maximize/restore, close, the system menu, snapping, and resize cursors. Normal-window resizing is locked to **16:9 during the drag** through `WM_SIZING`; this is not merely corrected after mouse release. The minimum normal size is 720×405. `F11` is the only borderless mode.
+GameShelf uses a custom non-client title bar so that **Launcher version** and **UI language** are visible drop-down controls directly in the title bar. The custom caption background returns `HTCAPTION`, preserving Windows drag-to-snap behaviour; explicit title-bar controls send the normal minimize, maximize/restore, and close commands. Normal-window resizing is locked to **16:9 during the drag** through `WM_SIZING`; this is not merely corrected after mouse release. The minimum normal size is 720×405. `F11` hides the custom title bar for fullscreen.
 
 Buttons that are unavailable for the current page are not created. Remaining header buttons shift left rather than leaving disabled gaps. Tooltips describe buttons and status blocks.
 

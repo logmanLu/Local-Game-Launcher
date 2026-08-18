@@ -8,12 +8,13 @@ namespace GameShelf;
 
 public sealed class MainForm : Form
 {
+    private sealed record TitleBarChoice(string Label, string? Value);
     private readonly DataStore _store;
     private readonly PackageService _packages;
     private readonly GameProcessTracker _processTracker;
     private Localizer _t;
     private readonly FlowLayoutPanel _content = new() { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(42) };
-    private readonly Panel _titleBar = new() { Dock = DockStyle.Top, Height = 0, Visible = false };
+    private readonly Panel _titleBar = new() { Dock = DockStyle.Top, Height = 38, Visible = true };
     private readonly Panel _top = new() { Dock = DockStyle.Top, Height = 108 };
     private int? _selectedId;
     private string _page = "library";
@@ -28,24 +29,18 @@ public sealed class MainForm : Form
     // FormBorderStyle/WindowState changes emit Resize but not ResizeEnd. Suppress
     // resize handling around those programmatic transitions and refresh once after.
     private bool _suppressResizeLayout;
-    private const int WmSysCommand = 0x0112;
-    private const uint MfString = 0x0000, MfPopup = 0x0010, MfSeparator = 0x0800, MfChecked = 0x0008;
-    private const int LauncherCommandBase = 0x7000, LanguageCommandBase = 0x7200;
-    private readonly Dictionary<int, Action> _nativeMenuCommands = [];
-    private bool _nativeSystemMenuBuilt;
 
     public MainForm(DataStore store)
     {
         _store = store; _packages = new PackageService(store); _processTracker = new GameProcessTracker(store); _t = new Localizer(store.Data.Settings.Language);
-        Text = "GameShelf"; Font = new Font("Segoe UI", 14f, FontStyle.Bold); MinimumSize = new Size(720, 405); KeyPreview = true; StartPosition = FormStartPosition.Manual; FormBorderStyle = FormBorderStyle.Sizable;
-        RestoreWindow(); Controls.Add(_content); Controls.Add(_top); Controls.Add(_resizeMask); ApplyTheme();
+        Text = "GameShelf"; Font = new Font("Segoe UI", 14f, FontStyle.Bold); MinimumSize = new Size(720, 405); KeyPreview = true; StartPosition = FormStartPosition.Manual; FormBorderStyle = FormBorderStyle.None;
+        RestoreWindow(); Controls.Add(_content); Controls.Add(_top); Controls.Add(_titleBar); Controls.Add(_resizeMask); ApplyTheme(); BuildTitleBar();
         _selectedId = store.Data.Settings.SelectedGameId;
         _management = false;
         if (_selectedId is not null && store.Data.Games.Any(game => game.Id == _selectedId) && store.Data.Settings.Page is "detail" or "edit") ShowDetail(); else { _selectedId = null; ShowLibrary(); }
         KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => _processTracker.Dispose();
         Shown += (_, _) =>
         {
-            BuildNativeSystemMenu();
             if (!_fullScreen) return;
             // RestoreWindow runs before the native form handle exists, so its
             // fullscreen transition cannot queue the usual post-transition refresh.
@@ -66,54 +61,6 @@ public sealed class MainForm : Form
         Bounds = screen is null ? new Rectangle((Screen.PrimaryScreen!.WorkingArea.Width - 1280) / 2, (Screen.PrimaryScreen.WorkingArea.Height - 720) / 2, 1280, 720) : new Rectangle(s.WindowX, s.WindowY, s.WindowWidth, s.WindowHeight);
         if (s.IsMaximized) WindowState = FormWindowState.Maximized;
         if (s.IsFullscreen) ToggleFullscreen();
-    }
-
-    /// <summary>
-    /// Native Windows title bars cannot host WinForms controls without replacing
-    /// the frame and losing system features.  The system menu is Windows' native
-    /// extension point for title-bar commands (app icon/right click/Alt+Space).
-    /// </summary>
-    private void BuildNativeSystemMenu()
-    {
-        if (_nativeSystemMenuBuilt || !IsHandleCreated) return;
-        var systemMenu = GetSystemMenu(Handle, false);
-        if (systemMenu == IntPtr.Zero) return;
-
-        var versions = CreatePopupMenu();
-        var languages = CreatePopupMenu();
-        if (versions == IntPtr.Zero || languages == IntPtr.Zero) return;
-        _nativeMenuCommands.Clear();
-
-        var current = Application.ExecutablePath;
-        var launchers = Directory.EnumerateFiles(_store.Paths.Root, "Launcher_*.exe")
-            .Select(path => new { Path = path, Match = Regex.Match(Path.GetFileNameWithoutExtension(path), @"^Launcher_(?<version>[0-9]+(?:_[0-9]+)*(?:a[0-9]*)?)$", RegexOptions.IgnoreCase) })
-            .Where(item => item.Match.Success)
-            .OrderByDescending(item => item.Match.Groups["version"].Value, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (launchers.Count == 0) AppendMenu(versions, MfString, 0, "No published versions found");
-        for (var index = 0; index < launchers.Count; index++)
-        {
-            var command = LauncherCommandBase + index;
-            var launcher = launchers[index].Path;
-            var label = launchers[index].Match.Groups["version"].Value.Replace('_', '.');
-            if (string.Equals(Path.GetFullPath(launcher), Path.GetFullPath(current), StringComparison.OrdinalIgnoreCase)) label += " (current)";
-            AppendMenu(versions, MfString | (string.Equals(Path.GetFullPath(launcher), Path.GetFullPath(current), StringComparison.OrdinalIgnoreCase) ? MfChecked : 0), (nuint)command, label);
-            _nativeMenuCommands[command] = () => RestartWithLauncher(launcher);
-        }
-
-        var choices = new[] { ("en", "English"), ("zh-Hant", "Traditional Chinese"), ("zh-Hans", "Simplified Chinese"), ("ja", "Japanese") };
-        for (var index = 0; index < choices.Length; index++)
-        {
-            var command = LanguageCommandBase + index;
-            var choice = choices[index];
-            AppendMenu(languages, MfString | (string.Equals(_store.Data.Settings.Language, choice.Item1, StringComparison.OrdinalIgnoreCase) ? MfChecked : 0), (nuint)command, choice.Item2);
-            _nativeMenuCommands[command] = () => ChangeUiLanguage(choice.Item1);
-        }
-
-        AppendMenu(systemMenu, MfSeparator, 0, null);
-        AppendMenu(systemMenu, MfPopup, (nuint)versions, "Launcher version");
-        AppendMenu(systemMenu, MfPopup, (nuint)languages, "UI language");
-        _nativeSystemMenuBuilt = true;
     }
 
     private void RestartWithLauncher(string launcher)
@@ -170,6 +117,7 @@ public sealed class MainForm : Form
                 // consistently treated as fullscreen messages.
                 _fullScreen = true;
                 FormBorderStyle = FormBorderStyle.None;
+                _titleBar.Visible = false;
                 WindowState = FormWindowState.Maximized;
             }
             else
@@ -178,6 +126,7 @@ public sealed class MainForm : Form
                 FormBorderStyle = _restoreBorderStyle;
                 Bounds = _restoreBounds;
                 _fullScreen = false;
+                _titleBar.Visible = true;
             }
         }
         finally { _suppressResizeLayout = false; }
@@ -202,13 +151,35 @@ public sealed class MainForm : Form
         _titleBar.DoubleClick += (_, _) => ToggleMaximize();
         var caption = new Label { Text = "GAMESHELF", Left = 14, Top = 9, Width = 160, Height = 23, Font = new Font("Segoe UI", 10, FontStyle.Bold), AccessibleName = "GameShelf" };
         caption.MouseDown += TitleBarMouseDown; caption.DoubleClick += (_, _) => ToggleMaximize();
+        var versions = new ComboBox { Width = 144, Height = 28, Top = 5, DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(35, 38, 39), ForeColor = Color.White, Font = new Font("Segoe UI", 9, FontStyle.Bold), AccessibleName = "Launcher version" };
+        var currentLauncher = Path.GetFullPath(Application.ExecutablePath);
+        var launchers = Directory.EnumerateFiles(_store.Paths.Root, "Launcher_*.exe")
+            .Select(path => new { Path = path, Match = Regex.Match(Path.GetFileNameWithoutExtension(path), @"^Launcher_(?<version>[0-9]+(?:_[0-9]+)*(?:a[0-9]*)?)$", RegexOptions.IgnoreCase) })
+            .Where(item => item.Match.Success)
+            .OrderByDescending(item => item.Match.Groups["version"].Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        foreach (var launcher in launchers)
+        {
+            var label = launcher.Match.Groups["version"].Value.Replace('_', '.');
+            if (string.Equals(Path.GetFullPath(launcher.Path), currentLauncher, StringComparison.OrdinalIgnoreCase)) label += " (current)";
+            versions.Items.Add(new TitleBarChoice(label, launcher.Path));
+        }
+        if (versions.Items.Count == 0) versions.Items.Add(new TitleBarChoice("No published versions", null));
+        versions.DisplayMember = nameof(TitleBarChoice.Label); versions.SelectedIndex = Math.Max(0, launchers.FindIndex(item => string.Equals(Path.GetFullPath(item.Path), currentLauncher, StringComparison.OrdinalIgnoreCase)));
+        versions.SelectionChangeCommitted += (_, _) => { if (versions.SelectedItem is TitleBarChoice choice && !string.IsNullOrWhiteSpace(choice.Value)) RestartWithLauncher(choice.Value); };
+
+        var languages = new ComboBox { Width = 144, Height = 28, Top = 5, DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(35, 38, 39), ForeColor = Color.White, Font = new Font("Segoe UI", 9, FontStyle.Bold), AccessibleName = "UI language" };
+        var languageChoices = new[] { new TitleBarChoice("English", "en"), new TitleBarChoice("Traditional Chinese", "zh-Hant"), new TitleBarChoice("Simplified Chinese", "zh-Hans"), new TitleBarChoice("Japanese", "ja") };
+        languages.DisplayMember = nameof(TitleBarChoice.Label); languages.Items.AddRange(languageChoices); languages.SelectedIndex = Math.Max(0, Array.FindIndex(languageChoices, choice => string.Equals(choice.Value, _store.Data.Settings.Language, StringComparison.OrdinalIgnoreCase)));
+        languages.SelectionChangeCommitted += (_, _) => { if (languages.SelectedItem is TitleBarChoice choice && !string.IsNullOrWhiteSpace(choice.Value)) ChangeUiLanguage(choice.Value); };
         var minimize = CreateWindowButton("—", "Minimize", (_, _) => WindowState = FormWindowState.Minimized);
         var maximize = CreateWindowButton("□", "Maximize or restore", (_, _) => ToggleMaximize());
         var close = CreateWindowButton("×", "Close", (_, _) => Close());
-        _titleBar.Controls.AddRange([caption, minimize, maximize, close]);
+        _titleBar.Controls.AddRange([caption, versions, languages, minimize, maximize, close]);
         void Position()
         {
             close.Location = new Point(_titleBar.Width - 42, 4); maximize.Location = new Point(_titleBar.Width - 84, 4); minimize.Location = new Point(_titleBar.Width - 126, 4);
+            languages.Left = Math.Max(174, _titleBar.Width - 126 - languages.Width - 8); versions.Left = Math.Max(174, languages.Left - versions.Width - 8);
         }
         Position(); _titleBar.Resize += (_, _) => Position();
     }
@@ -241,14 +212,15 @@ public sealed class MainForm : Form
         var left = point.X <= edge; var right = point.X >= ClientSize.Width - edge; var top = point.Y <= edge; var bottom = point.Y >= ClientSize.Height - edge;
         return left && top ? HtTopLeft : right && top ? HtTopRight : left && bottom ? HtBottomLeft : right && bottom ? HtBottomRight : left ? HtLeft : right ? HtRight : top ? HtTop : bottom ? HtBottom : HtClient;
     }
+    private bool IsTitleBarInteractive(Point clientPoint)
+    {
+        if (!_titleBar.Visible || !_titleBar.Bounds.Contains(clientPoint)) return false;
+        var child = _titleBar.GetChildAtPoint(_titleBar.PointToClient(clientPoint), GetChildAtPointSkip.Invisible);
+        return child is Button or ComboBox;
+    }
     protected override void WndProc(ref Message m)
     {
         const int WmSetCursor = 0x20, WmNcHitTest = 0x84, WmSizing = 0x214, HtClient = 1;
-        if (m.Msg == WmSysCommand && _nativeMenuCommands.TryGetValue((int)m.WParam, out var command))
-        {
-            command();
-            return;
-        }
         if (m.Msg == WmSizing && !_fullScreen && WindowState == FormWindowState.Normal && m.LParam != IntPtr.Zero)
         {
             var rect = Marshal.PtrToStructure<NativeRect>(m.LParam); var width = Math.Max(MinimumSize.Width, rect.Right - rect.Left); var height = Math.Max(MinimumSize.Height, (int)Math.Round(width * 9d / 16d));
@@ -275,12 +247,10 @@ public sealed class MainForm : Form
         base.WndProc(ref m);
         if (m.Msg != WmNcHitTest || _fullScreen || WindowState == FormWindowState.Maximized || (int)m.Result != HtClient) return;
         var point = PointToClient(new Point((short)((long)m.LParam & 0xffff), (short)(((long)m.LParam >> 16) & 0xffff)));
-        m.Result = (IntPtr)ResizeHitTest(point);
+        var resizeHit = ResizeHitTest(point);
+        if (resizeHit != HtClient) { m.Result = (IntPtr)resizeHit; return; }
+        if (!_fullScreen && _titleBar.Bounds.Contains(point) && !IsTitleBarInteractive(point)) m.Result = (IntPtr)2; // HTCAPTION: Windows supplies drag/snap behaviour.
     }
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr GetSystemMenu(IntPtr window, bool revert);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "AppendMenuW")] private static extern bool AppendMenu(IntPtr menu, uint flags, nuint identifier, string? text);
-    [DllImport("user32.dll")] private static extern IntPtr CreatePopupMenu();
 
     // Dark styling is a product constant; savedata no longer carries a theme.
     // Existing layout helpers use this compile-time value while their dark-only
