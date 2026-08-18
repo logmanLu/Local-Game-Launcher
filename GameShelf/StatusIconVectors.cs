@@ -105,6 +105,7 @@ public static class StatusIconVectors
 public sealed class StatusIconCanvas : Control
 {
     private readonly List<StatusIconShape> _shapes;
+    private readonly string? _fallbackGlyph;
     private Point _start;
     private Point _current;
     private bool _dragging;
@@ -113,9 +114,9 @@ public sealed class StatusIconCanvas : Control
     public string Tool { get; set; } = "line";
     public IReadOnlyList<StatusIconShape> Shapes => _shapes;
 
-    public StatusIconCanvas(Color background, string? vector)
+    public StatusIconCanvas(Color background, string? vector, string? fallbackGlyph = null)
     {
-        _shapes = StatusIconVectors.Parse(vector); BackColor = background; DoubleBuffered = true; Cursor = Cursors.Cross;
+        _shapes = StatusIconVectors.Parse(vector); _fallbackGlyph = fallbackGlyph; BackColor = background; DoubleBuffered = true; Cursor = Cursors.Cross;
     }
     public void Clear() { _shapes.Clear(); Invalidate(); }
     protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { _start = e.Location; _current = e.Location; _stroke.Clear(); _stroke.Add(e.Location); _dragging = true; Capture = true; Invalidate(); } base.OnMouseDown(e); }
@@ -135,7 +136,13 @@ public sealed class StatusIconCanvas : Control
     {
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         e.Graphics.Clear(BackColor);
-        StatusIconVectors.Draw(e.Graphics, ClientRectangle, StatusIconVectors.Serialize(_shapes));
+        if (_shapes.Count == 0 && !string.IsNullOrWhiteSpace(_fallbackGlyph))
+        {
+            var fontSize = Math.Max(24, Math.Min(ClientSize.Width, ClientSize.Height) * 0.48f);
+            TextRenderer.DrawText(e.Graphics, _fallbackGlyph, new Font("Segoe UI Symbol", fontSize, FontStyle.Bold), ClientRectangle, Color.White,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        }
+        else StatusIconVectors.Draw(e.Graphics, ClientRectangle, StatusIconVectors.Serialize(_shapes));
         if (_dragging) StatusIconVectors.DrawShape(e.Graphics, ClientRectangle, ToShape(_start, _current));
         using var border = new Pen(Color.White, 2); e.Graphics.DrawRectangle(border, 1, 1, Math.Max(0, Width - 3), Math.Max(0, Height - 3));
     }

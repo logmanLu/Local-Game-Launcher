@@ -1,8 +1,35 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.0`
+**Current application patch:** `2.0.1` (stable)
 
 ## Patch history
+
+### 2.0.1 (stable)
+
+- Stable consolidation of the 2.0.1 alpha sequence: native Windows title bar and menu-bar version/language controls, data-format compatibility normalization, dark-only presentation, and the simplified valid-path-only Launch action.
+- Stable builds use the `Information` log threshold by default; `GAMESHELF_LOG_LEVEL` can temporarily raise detail for diagnostics.
+
+### 2.0.1a3 (alpha)
+
+- Restored the ordinary Windows non-client title bar: Windows owns the app icon, system menu, caption dragging, snap layouts, resize borders, and minimize/maximize/close controls.
+- Added a traditional native Windows menu bar directly below the title bar. Click **Version** (or press `Alt+V`) to choose any existing stable `Launcher_<version>.exe` plus only the newest alpha build; click **Language** (or press `Alt+L`) to persist the selected UI language and restart. The menu is hidden in fullscreen and restored when fullscreen ends.
+- The portrait cover in game detail now has a 480-pixel minimum height when the window permits it. Any added Section 1 height is shared by the number/launch, title, and tag rows; narrow windows cap the cover to the 1A column rather than allowing it to overlap the right-side fields.
+
+### 2.0.1a2 (alpha)
+
+- Removed the Stop-game action completely. Game detail now always presents the normal Launch glyph when the registered game executable is valid, regardless of whether a tracked game process exists. The control is absent only when that executable path is invalid; it no longer changes colour or sends a close request to a game.
+
+### 2.0.1a1 (alpha)
+
+- Fixed a launch-time page-rebuild loop reported with game `#22`. The log showed an inaccessible, non-game descendant selected by the region-launcher hand-off; attachment failed and falsely emitted a process-state update, which rebuilt the detail page and retried roughly every 0.1 seconds. Region hand-off now accepts only a descendant whose native Windows image path exactly matches the registered game executable. Failed attachment restores the previous launcher tracker state and emits no UI state event.
+- Enlarged the vector icon editor and moved its tool palette and bottom actions down, giving the explanatory text a dedicated 150-pixel area so it is not truncated.
+
+### 2.0.1a (alpha)
+
+- Region-command launches are now retained as tracked parent processes and make two bounded post-launch descendant checks (at 450 ms and 1.5 s). This fixes Locale Emulator-style launches such as game `#22`, where WMI process-start notifications are unavailable due to Windows access policy. Exact configured executable paths are preferred when a child is adopted; the process log records the launcher, candidate result, and adopted child.
+- The vector button-icon editor now previews the logical built-in button glyph whenever no custom vector artwork exists, including after Clear. Its bottom actions remain icon-only by design: `X` clears custom artwork, `✓` saves, and `←` discards.
+- The native Windows title-bar system menu (app icon, title-bar right click, or `Alt+Space`) now includes **Launcher version** and **UI language** submenus. Selecting a version starts that versioned `Launcher_<version>.exe` and closes the current process; choosing a UI language persists the setting and restarts to apply it. Normal Windows caption buttons, snapping, and window controls remain native.
+- Savedata format is now version 2. Older files are backed up under `savedata/backups/` before in-place normalization; unknown JSON fields are preserved for forward compatibility. The old persisted Theme setting is removed, and dark presentation is now permanent. UI language is persisted as `en`, `zh-Hant`, `zh-Hans`, or `ja`.
 
 ### 2.0.0
 
@@ -149,7 +176,7 @@ The top-level document (`AppData`) contains:
 
 | Field | Format / purpose |
 | --- | --- |
-| `Version` | Database format version; currently `1`. |
+| `Version` | Database format version; currently `2`. Older files are backed up to `savedata/backups/` before migration; unknown JSON fields are round-tripped for forward compatibility. |
 | `Settings` | Window state, last safe page/selected game, selected tag filters, the up-to-three Library-card dimensions, custom button vectors, and tracked running-process identities. Library and game-detail page state are restored at launch. |
 | `RcRootPath` | Absolute shared `rc` folder. `GamePath` values are relative to this folder. |
 | `SaveRoots` | Save-root mappings: an ID, display name, and `.` or Windows environment-variable path template. |
@@ -201,7 +228,7 @@ Each time a detail page opens, the game path is checked. A valid EXE forces the 
 
 Launching resolves the stored relative executable against `RcRootPath`, then uses the executable's directory as `WorkingDirectory`, matching the behavior of double-clicking that EXE in Explorer. If a region command is selected, GameShelf starts that command with the resolved executable as its final argument and still uses the game directory as the working directory.
 
-The detail launch control is event-driven: it is blue with a stop glyph while the tracked executable is running and returns to Play on its Windows exit event. GameShelf does not poll every few seconds. Opening a detail page performs one native process-image-path query for that exact executable and attaches when it is found; WMI process-start events remain an optional enhancement for games spawned by region launchers after GameShelf starts. Stop requests a normal application close, not a forced process kill.
+The detail launch control is always the normal Launch glyph when the registered executable path is valid, and is hidden when it is invalid. GameShelf does not expose a Stop-game action and never sends a close request to a game. Internal process tracking remains diagnostic only and does not alter the detail button.
 
 The edit page shows the current cover and places cover selection/cropping and save actions after the other settings. Choice controls are populated from direct `Selection<int>` items rather than delayed data binding, so the saved play status, game status, region alias, and tags are retained when edit opens. Status dropdowns display their current status color.
 

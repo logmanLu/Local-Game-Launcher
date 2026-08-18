@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace GameShelf;
@@ -6,7 +7,8 @@ public enum StatusKind { Play, Game }
 
 public sealed class AppData
 {
-    public int Version { get; set; } = 1;
+    public const int CurrentFormatVersion = 2;
+    public int Version { get; set; } = CurrentFormatVersion;
     public AppSettings Settings { get; set; } = new();
     public Dictionary<int, string> RegionCommands { get; set; } = new() { [0] = "" };
     public Dictionary<int, string> RegionAliases { get; set; } = new() { [0] = "none" };
@@ -16,12 +18,12 @@ public sealed class AppData
     public List<GameStatus> PlayStatuses { get; set; } = Defaults.PlayStatuses();
     public List<GameStatus> GameStatuses { get; set; } = Defaults.GameStatuses();
     public List<GameEntry> Games { get; set; } = [];
+    [JsonExtensionData] public Dictionary<string, JsonElement>? UnknownFields { get; set; }
 }
 
 public sealed class AppSettings
 {
-    public string Language { get; set; } = "auto";
-    public string Theme { get; set; } = "system";
+    public string Language { get; set; } = "en";
     public string Page { get; set; } = "library";
     public int? SelectedGameId { get; set; }
     public bool IsMaximized { get; set; }
@@ -35,6 +37,7 @@ public sealed class AppSettings
     public List<int> HomeDisplayDimensionIds { get; set; } = [];
     public Dictionary<string, string> ButtonIcons { get; set; } = [];
     public Dictionary<int, RunningGameProcess> RunningGameProcesses { get; set; } = [];
+    [JsonExtensionData] public Dictionary<string, JsonElement>? UnknownFields { get; set; }
 }
 
 /// <summary>Volatile process identity persisted only so a restarted GameShelf can reattach safely.</summary>
@@ -42,6 +45,7 @@ public sealed class RunningGameProcess
 {
     public int ProcessId { get; set; }
     public long StartTimeUtcTicks { get; set; }
+    [JsonExtensionData] public Dictionary<string, JsonElement>? UnknownFields { get; set; }
 }
 
 public sealed class TagDimension
@@ -49,6 +53,7 @@ public sealed class TagDimension
     public int DimensionId { get; set; }
     public string Name { get; set; } = "";
     public Dictionary<int, string> Values { get; set; } = new() { [0] = "none" };
+    [JsonExtensionData] public Dictionary<string, JsonElement>? UnknownFields { get; set; }
 }
 
 public sealed class GameStatus
@@ -60,6 +65,7 @@ public sealed class GameStatus
     public bool IsDefault { get; set; }
     /// <summary>Reserved role for the four path-aware game states; empty for user-defined states.</summary>
     public string SystemRole { get; set; } = "";
+    [JsonExtensionData] public Dictionary<string, JsonElement>? UnknownFields { get; set; }
 }
 
 public sealed class GameEntry
@@ -76,6 +82,7 @@ public sealed class GameEntry
     public int GameStatusId { get; set; }
     public int RegionCommandId { get; set; }
     public List<int> Tags { get; set; } = [];
+    [JsonExtensionData] public Dictionary<string, JsonElement>? UnknownFields { get; set; }
 }
 
 public sealed class SaveRoot
@@ -83,6 +90,7 @@ public sealed class SaveRoot
     public int Id { get; set; }
     public string Name { get; set; } = "";
     public string PathTemplate { get; set; } = "";
+    [JsonExtensionData] public Dictionary<string, JsonElement>? UnknownFields { get; set; }
 }
 
 public sealed class ImportedGame

@@ -1,5 +1,3 @@
-using System.Globalization;
-
 namespace GameShelf;
 
 public sealed class Localizer
@@ -21,6 +19,16 @@ public sealed class Localizer
         ["Dimensions"] = ["Dimensions", "次元", "標籤維度", "标签维度"], ["Region commands"] = ["Region commands", "地域コマンド", "轉區指令", "转区指令"],
         ["Statuses"] = ["Statuses", "ステータス", "狀態", "状态"], ["Select a game"] = ["Select a game", "ゲームを選択", "選擇遊戲", "选择游戏"]
     };
-    public Localizer(string saved) { _language = "en"; }
-    public string this[string key] => Text.TryGetValue(key, out var s) ? s[_language switch { "ja" => 1, "zh" when CultureInfo.CurrentUICulture.Name.Contains("Hans") => 3, "zh-CN" => 3, "zh-Hans" => 3, "zh" => 2, _ => 0 }] : key;
+    public Localizer(string? saved)
+    {
+        _language = saved?.Trim().ToLowerInvariant() switch
+        {
+            "ja" or "ja-jp" => "ja",
+            "zh-hans" or "zh-cn" or "zh-sg" => "zh-Hans",
+            "zh-hant" or "zh-tw" or "zh-hk" or "zh" => "zh-Hant",
+            _ => "en"
+        };
+    }
+    public string Language => _language;
+    public string this[string key] => Text.TryGetValue(key, out var s) ? s[_language switch { "ja" => 1, "zh-Hans" => 3, "zh-Hant" => 2, _ => 0 }] : key;
 }
