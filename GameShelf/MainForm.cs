@@ -8,6 +8,7 @@ namespace GameShelf;
 
 public sealed class MainForm : Form
 {
+    private sealed record LauncherChoice(string Path, string Label, bool IsPreview, string SortKey);
     private readonly DataStore _store;
     private readonly PackageService _packages;
     private readonly GameProcessTracker _processTracker;
@@ -82,10 +83,14 @@ public sealed class MainForm : Form
         if (menu == IntPtr.Zero || launcherMenu == IntPtr.Zero || languageMenu == IntPtr.Zero) return;
         _nativeMenuCommands.Clear();
         var current = Path.GetFullPath(Application.ExecutablePath);
-        var launchers = Directory.EnumerateFiles(_store.Paths.Root, "Launcher_*.exe")
-            .Select(path => new { Path = path, Match = Regex.Match(Path.GetFileNameWithoutExtension(path), @"^Launcher_(?<version>[0-9]+(?:_[0-9]+)*(?:a[0-9]*)?)$", RegexOptions.IgnoreCase) })
-            .Where(item => item.Match.Success)
-            .OrderByDescending(item => item.Match.Groups["version"].Value, StringComparer.OrdinalIgnoreCase)
+        var candidates = Directory.EnumerateFiles(_store.Paths.Root, "Launcher_*.exe")
+            .Select(ParseLauncherChoice)
+            .OfType<LauncherChoice>()
+            .ToList();
+        // Keep every stable release, plus precisely one newest alpha build.
+        var launchers = candidates.Where(item => !item.IsPreview)
+            .OrderByDescending(item => item.SortKey, StringComparer.Ordinal)
+            .Concat(candidates.Where(item => item.IsPreview).OrderByDescending(item => item.SortKey, StringComparer.Ordinal).Take(1))
             .ToList();
         if (launchers.Count == 0)
         {
@@ -98,9 +103,8 @@ public sealed class MainForm : Form
                 var item = launchers[index];
                 var launcher = item.Path;
                 var isCurrent = string.Equals(Path.GetFullPath(launcher), current, StringComparison.OrdinalIgnoreCase);
-                var label = item.Match.Groups["version"].Value.Replace('_', '.');
                 var command = LauncherCommandBase + index;
-                AppendMenu(launcherMenu, MfString | (isCurrent ? MfChecked : 0), (nuint)command, isCurrent ? label + " (current)" : label);
+                AppendMenu(launcherMenu, MfString | (isCurrent ? MfChecked : 0), (nuint)command, isCurrent ? item.Label + " (current)" : item.Label);
                 _nativeMenuCommands[command] = () => RestartWithLauncher(launcher);
             }
         }
@@ -114,12 +118,24 @@ public sealed class MainForm : Form
             AppendMenu(languageMenu, MfString | (selected ? MfChecked : 0), (nuint)command, choice.Item2);
             _nativeMenuCommands[command] = () => ChangeUiLanguage(choice.Item1);
         }
-        AppendMenu(menu, MfPopup, (nuint)launcherMenu, "&Launcher");
+        AppendMenu(menu, MfPopup, (nuint)launcherMenu, "&Version");
         AppendMenu(menu, MfPopup, (nuint)languageMenu, "&Language");
         if (!SetMenu(Handle, menu)) { DestroyMenu(menu); return; }
         _nativeMenu = menu;
         _nativeMenuBuilt = true;
         DrawMenuBar(Handle);
+    }
+
+    private static LauncherChoice? ParseLauncherChoice(string path)
+    {
+        var match = Regex.Match(Path.GetFileNameWithoutExtension(path), @"^Launcher_(?<core>[0-9]+(?:_[0-9]+)*)(?<alpha>a[0-9]*)?$", RegexOptions.IgnoreCase);
+        if (!match.Success) return null;
+        var preview = match.Groups["alpha"].Success;
+        var alphaNumber = preview && int.TryParse(match.Groups["alpha"].Value[1..], out var value) ? value : 0;
+        var numericKey = string.Join('.', match.Groups["core"].Value.Split('_').Select(part => int.Parse(part).ToString("D8")));
+        // The key is used only inside a matching version family; alpha sequence
+        // is sufficient to choose the newest test build of the highest version.
+        return new LauncherChoice(path, (match.Groups["core"].Value + match.Groups["alpha"].Value).Replace('_', '.'), preview, numericKey + $".{alphaNumber:D8}");
     }
 
     private void HideNativeMenu()

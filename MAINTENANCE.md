@@ -7,7 +7,7 @@
 ### 2.0.1a3 (alpha)
 
 - Restored the ordinary Windows non-client title bar: Windows owns the app icon, system menu, caption dragging, snap layouts, resize borders, and minimize/maximize/close controls.
-- Added a traditional native Windows menu bar directly below the title bar. Its **Launcher** menu chooses a published `Launcher_<version>.exe` and restarts GameShelf; its **Language** menu persists the selected UI language and restarts. The menu is hidden in fullscreen and restored when fullscreen ends.
+- Added a traditional native Windows menu bar directly below the title bar. Click **Version** (or press `Alt+V`) to choose any existing stable `Launcher_<version>.exe` plus only the newest alpha build; click **Language** (or press `Alt+L`) to persist the selected UI language and restart. The menu is hidden in fullscreen and restored when fullscreen ends.
 
 ### 2.0.1a2 (alpha)
 
