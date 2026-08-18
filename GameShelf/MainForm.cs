@@ -27,19 +27,25 @@ public sealed class MainForm : Form
     // FormBorderStyle/WindowState changes emit Resize but not ResizeEnd. Suppress
     // resize handling around those programmatic transitions and refresh once after.
     private bool _suppressResizeLayout;
-    private MainMenu? _nativeMenu;
+    private const int WmCommand = 0x0111;
+    private const uint MfString = 0x0000, MfPopup = 0x0010, MfChecked = 0x0008;
+    private const int LauncherCommandBase = 0x7000, LanguageCommandBase = 0x7200;
+    private readonly Dictionary<int, Action> _nativeMenuCommands = [];
+    private IntPtr _nativeMenu;
+    private bool _nativeMenuBuilt;
 
     public MainForm(DataStore store)
     {
         _store = store; _packages = new PackageService(store); _processTracker = new GameProcessTracker(store); _t = new Localizer(store.Data.Settings.Language);
         Text = "GameShelf"; Font = new Font("Segoe UI", 14f, FontStyle.Bold); MinimumSize = new Size(720, 405); KeyPreview = true; StartPosition = FormStartPosition.Manual; FormBorderStyle = FormBorderStyle.Sizable;
-        RestoreWindow(); BuildNativeMenu(); Controls.Add(_content); Controls.Add(_top); Controls.Add(_resizeMask); ApplyTheme();
+        RestoreWindow(); Controls.Add(_content); Controls.Add(_top); Controls.Add(_resizeMask); ApplyTheme();
         _selectedId = store.Data.Settings.SelectedGameId;
         _management = false;
         if (_selectedId is not null && store.Data.Games.Any(game => game.Id == _selectedId) && store.Data.Settings.Page is "detail" or "edit") ShowDetail(); else { _selectedId = null; ShowLibrary(); }
-        KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => _processTracker.Dispose();
+        KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => { DetachNativeMenu(); _processTracker.Dispose(); };
         Shown += (_, _) =>
         {
+            if (!_fullScreen) BuildNativeMenu();
             if (!_fullScreen) return;
             // RestoreWindow runs before the native form handle exists, so its
             // fullscreen transition cannot queue the usual post-transition refresh.
@@ -69,8 +75,12 @@ public sealed class MainForm : Form
     /// </summary>
     private void BuildNativeMenu()
     {
-        var launcherMenu = new MenuItem("&Launcher");
-        var languageMenu = new MenuItem("&Language");
+        if (_nativeMenuBuilt || !IsHandleCreated) return;
+        var menu = CreateMenu();
+        var launcherMenu = CreatePopupMenu();
+        var languageMenu = CreatePopupMenu();
+        if (menu == IntPtr.Zero || launcherMenu == IntPtr.Zero || languageMenu == IntPtr.Zero) return;
+        _nativeMenuCommands.Clear();
         var current = Path.GetFullPath(Application.ExecutablePath);
         var launchers = Directory.EnumerateFiles(_store.Paths.Root, "Launcher_*.exe")
             .Select(path => new { Path = path, Match = Regex.Match(Path.GetFileNameWithoutExtension(path), @"^Launcher_(?<version>[0-9]+(?:_[0-9]+)*(?:a[0-9]*)?)$", RegexOptions.IgnoreCase) })
@@ -79,31 +89,60 @@ public sealed class MainForm : Form
             .ToList();
         if (launchers.Count == 0)
         {
-            launcherMenu.MenuItems.Add(new MenuItem("No published versions found") { Enabled = false });
+            AppendMenu(launcherMenu, MfString, 0, "No published versions found");
         }
         else
         {
-            foreach (var item in launchers)
+            for (var index = 0; index < launchers.Count; index++)
             {
+                var item = launchers[index];
                 var launcher = item.Path;
                 var isCurrent = string.Equals(Path.GetFullPath(launcher), current, StringComparison.OrdinalIgnoreCase);
                 var label = item.Match.Groups["version"].Value.Replace('_', '.');
-                var choice = new MenuItem(isCurrent ? label + " (current)" : label, (_, _) => RestartWithLauncher(launcher)) { Checked = isCurrent };
-                launcherMenu.MenuItems.Add(choice);
+                var command = LauncherCommandBase + index;
+                AppendMenu(launcherMenu, MfString | (isCurrent ? MfChecked : 0), (nuint)command, isCurrent ? label + " (current)" : label);
+                _nativeMenuCommands[command] = () => RestartWithLauncher(launcher);
             }
         }
 
         var choices = new[] { ("en", "English"), ("zh-Hant", "Traditional Chinese"), ("zh-Hans", "Simplified Chinese"), ("ja", "Japanese") };
-        foreach (var choice in choices)
+        for (var index = 0; index < choices.Length; index++)
         {
-            var item = new MenuItem(choice.Item2, (_, _) => ChangeUiLanguage(choice.Item1))
-            {
-                Checked = string.Equals(_store.Data.Settings.Language, choice.Item1, StringComparison.OrdinalIgnoreCase)
-            };
-            languageMenu.MenuItems.Add(item);
+            var choice = choices[index];
+            var command = LanguageCommandBase + index;
+            var selected = string.Equals(_store.Data.Settings.Language, choice.Item1, StringComparison.OrdinalIgnoreCase);
+            AppendMenu(languageMenu, MfString | (selected ? MfChecked : 0), (nuint)command, choice.Item2);
+            _nativeMenuCommands[command] = () => ChangeUiLanguage(choice.Item1);
         }
-        _nativeMenu = new MainMenu([launcherMenu, languageMenu]);
-        Menu = _nativeMenu;
+        AppendMenu(menu, MfPopup, (nuint)launcherMenu, "&Launcher");
+        AppendMenu(menu, MfPopup, (nuint)languageMenu, "&Language");
+        if (!SetMenu(Handle, menu)) { DestroyMenu(menu); return; }
+        _nativeMenu = menu;
+        _nativeMenuBuilt = true;
+        DrawMenuBar(Handle);
+    }
+
+    private void HideNativeMenu()
+    {
+        if (_nativeMenu == IntPtr.Zero || !IsHandleCreated) return;
+        SetMenu(Handle, IntPtr.Zero);
+        DrawMenuBar(Handle);
+    }
+
+    private void ShowNativeMenu()
+    {
+        if (!_nativeMenuBuilt) { BuildNativeMenu(); return; }
+        if (!IsHandleCreated) return;
+        SetMenu(Handle, _nativeMenu);
+        DrawMenuBar(Handle);
+    }
+
+    private void DetachNativeMenu()
+    {
+        if (_nativeMenu == IntPtr.Zero) return;
+        if (IsHandleCreated) SetMenu(Handle, IntPtr.Zero);
+        DestroyMenu(_nativeMenu);
+        _nativeMenu = IntPtr.Zero;
     }
 
     private void RestartWithLauncher(string launcher)
@@ -159,8 +198,8 @@ public sealed class MainForm : Form
                 // Set this first so native messages produced by the transition are
                 // consistently treated as fullscreen messages.
                 _fullScreen = true;
+                HideNativeMenu();
                 FormBorderStyle = FormBorderStyle.None;
-                Menu = null;
                 WindowState = FormWindowState.Maximized;
             }
             else
@@ -169,7 +208,7 @@ public sealed class MainForm : Form
                 FormBorderStyle = _restoreBorderStyle;
                 Bounds = _restoreBounds;
                 _fullScreen = false;
-                Menu = _nativeMenu;
+                ShowNativeMenu();
             }
         }
         finally { _suppressResizeLayout = false; }
@@ -199,6 +238,11 @@ public sealed class MainForm : Form
     protected override void WndProc(ref Message m)
     {
         const int WmSetCursor = 0x20, WmNcHitTest = 0x84, WmSizing = 0x214, HtClient = 1;
+        if (m.Msg == WmCommand && _nativeMenuCommands.TryGetValue((int)((long)m.WParam & 0xffff), out var command))
+        {
+            command();
+            return;
+        }
         if (m.Msg == WmSizing && !_fullScreen && WindowState == FormWindowState.Normal && m.LParam != IntPtr.Zero)
         {
             var rect = Marshal.PtrToStructure<NativeRect>(m.LParam); var width = Math.Max(MinimumSize.Width, rect.Right - rect.Left); var height = Math.Max(MinimumSize.Height, (int)Math.Round(width * 9d / 16d));
@@ -227,6 +271,14 @@ public sealed class MainForm : Form
         var point = PointToClient(new Point((short)((long)m.LParam & 0xffff), (short)(((long)m.LParam >> 16) & 0xffff)));
         m.Result = (IntPtr)ResizeHitTest(point);
     }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "AppendMenuW")]
+    private static extern bool AppendMenu(IntPtr menu, uint flags, nuint identifier, string? text);
+    [DllImport("user32.dll")] private static extern IntPtr CreateMenu();
+    [DllImport("user32.dll")] private static extern IntPtr CreatePopupMenu();
+    [DllImport("user32.dll")] private static extern bool SetMenu(IntPtr window, IntPtr menu);
+    [DllImport("user32.dll")] private static extern bool DrawMenuBar(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool DestroyMenu(IntPtr menu);
 
     // Dark styling is a product constant; savedata no longer carries a theme.
     // Existing layout helpers use this compile-time value while their dark-only
