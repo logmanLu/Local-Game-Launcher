@@ -391,6 +391,11 @@ public sealed class DataStore : IDisposable
             "zh-hant" or "zh-tw" or "zh-hk" or "zh" => "zh-Hant",
             _ => "en"
         };
+        var launcherSelection = Data.Settings.LauncherSelection?.Trim().ToLowerInvariant() ?? "";
+        Data.Settings.LauncherSelection = launcherSelection is "auto-latest" or "auto-stable"
+            || System.Text.RegularExpressions.Regex.IsMatch(launcherSelection, "^exact:[0-9]+\\.[0-9]+\\.[0-9]+(?:a[0-9]*)?$")
+                ? launcherSelection
+                : "auto-latest";
         Data.Settings.SelectedTagFilters ??= [];
         Data.Settings.HomeDisplayDimensionIds ??= [];
         Data.Settings.ButtonIcons ??= [];
