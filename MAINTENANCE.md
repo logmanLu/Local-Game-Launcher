@@ -1,13 +1,18 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0a6` (alpha)
+**Current application patch:** `2.1.0a7` (alpha)
 
 ## Patch history
+
+### 2.1.0a7 (alpha)
+
+- Made Library cards a uniform measured height. Every card now reserves two title lines regardless of its own title length, and its ID label has a measured safe height so multi-digit game numbers cannot be clipped.
+- Corrected the detail-tag interpretation: purple and orange chips are now strictly one-line, grow to fit their complete text, and are moved as whole boxes to a subsequent row by the greedy/indented row layouts. They no longer split a dimension name, colon, or value inside a box.
 
 ### 2.1.0a6 (alpha)
 
 - Reworked Library-card lower layout around measured content rather than a tall fixed reservation. The title now sits directly above the compact single-select strip, and each selected multi-select dimension receives exactly one compact, independent orange-chip row. A long first dimension scrolls inside its own row instead of taking the second dimension's row.
-- Strengthened detail tag sizing: after inserting required display line breaks, each purple/orange chip now explicitly measures that final rendered text (including padding) before assigning its height. This prevents truncation of dimension descriptions, colons and mapped values in narrow detail sections.
+- Strengthened detail tag sizing in preparation for the subsequent single-line chip rule; a6 calculated final chip heights explicitly rather than relying on stale WinForms AutoSize state.
 - The version handoff safety from `2.1.0a5` remains in force: fixed `Launcher.exe` defers state restoration to the selected versioned executable and skips state persistence while handing off. A fixed launcher with an explicitly pinned version will intentionally continue to start that pinned file; run `Launcher_2_1_0a6.exe` directly or select **Automatically select latest version** to test this alpha.
 
 ### 2.1.0a5 (alpha)

@@ -846,21 +846,21 @@ public sealed class MainForm : Form
     {
         var cardWidth = S(390); var baseColor = Color.FromArgb(38, 42, 42);
         using var cardTitleFont = new Font(Font.FontFamily, S(20), FontStyle.Bold);
-        var titleMeasure = TextRenderer.MeasureText(DisplayTitle(game.Title), cardTitleFont, new Size(cardWidth - S(24), int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
-        // The lower portion is content-sized rather than a tall fixed canvas:
-        // title -> compact single tags -> exactly one compact row per selected
-        // multi dimension.  Keeping the rows independent prevents a long first
-        // multi dimension from consuming the second dimension's reservation.
-        var titleHeight = Math.Max(S(54), titleMeasure.Height + S(4)); var singleHeight = S(60); var multiRowHeight = S(42); var multiHeight = multiRowHeight * 2 + S(6);
-        var singleTop = S(310) + titleHeight + S(3); var multiTop = singleTop + singleHeight + S(4); var cardHeight = multiTop + multiHeight + S(9);
+        using var cardIdFont = new Font(Font.FontFamily, S(22), FontStyle.Bold);
+        // Every card reserves the same two title lines, even when a title only
+        // needs one. This keeps card bottoms aligned and protects large IDs.
+        var idTop = S(278); var idHeight = Math.Max(S(38), TextRenderer.MeasureText("0123456789", cardIdFont).Height + S(4));
+        var titleTop = idTop + idHeight; var titleHeight = Math.Max(S(64), TextRenderer.MeasureText("Ag\nAg", cardTitleFont).Height + S(8));
+        var singleHeight = S(60); var multiRowHeight = S(42); var multiHeight = multiRowHeight * 2 + S(6);
+        var singleTop = titleTop + titleHeight + S(3); var multiTop = singleTop + singleHeight + S(4); var cardHeight = multiTop + multiHeight + S(9);
         var card = new Panel { Width = cardWidth, Height = cardHeight, Margin = new Padding(S(16)), BorderStyle = BorderStyle.FixedSingle, AccessibleName = game.Title, BackColor = baseColor };
         var imageHeight = S(263); var imageWidth = imageHeight * 3 / 4; var rightLeft = S(9) + imageWidth + S(10); var rightWidth = cardWidth - rightLeft - S(9);
         var image = new PictureBox { Left = S(9), Top = S(9), Width = imageWidth, Height = imageHeight, SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), Cursor = _management ? Cursors.Default : Cursors.Hand };
         var statusGap = S(7); var statusHeight = (imageHeight - statusGap) / 2;
         var playStatus = StatusBlock(StatusKind.Play, game.PlayStatusId, new Rectangle(rightLeft, S(9), rightWidth, statusHeight));
         var gameStatus = StatusBlock(StatusKind.Game, game.GameStatusId, new Rectangle(rightLeft, S(9) + statusHeight + statusGap, rightWidth, statusHeight));
-        var id = new Label { Text = game.Id.ToString(), Left = S(12), Top = S(278), Width = cardWidth - S(24), Height = S(30), Font = new Font(Font.FontFamily, S(22), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
-        var title = new Label { Text = DisplayTitle(game.Title), Left = S(12), Top = S(310), Width = cardWidth - S(24), Height = titleHeight, AutoEllipsis = true, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = Color.White };
+        var id = new Label { Text = game.Id.ToString(), Left = S(12), Top = idTop, Width = cardWidth - S(24), Height = idHeight, Font = new Font(Font.FontFamily, S(22), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
+        var title = new Label { Text = DisplayTitle(game.Title), Left = S(12), Top = titleTop, Width = cardWidth - S(24), Height = titleHeight, AutoEllipsis = true, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = Color.White };
         var singleTags = new FlowLayoutPanel { Left = S(9), Top = singleTop, Width = cardWidth - S(18), Height = singleHeight, AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
         foreach (var dimension in HomeDisplayDimensions())
         {
@@ -1136,32 +1136,13 @@ public sealed class MainForm : Form
         var chip = FilterChip(text, color);
         chip.Margin = Padding.Empty;
         var natural = TextRenderer.MeasureText(text, chip.Font).Width + S(18);
-        var width = Math.Min(maximumWidth, natural);
-        var textWidth = Math.Max(S(20), width - chip.Padding.Horizontal);
-        chip.Text = WrapDetailChipText(text, chip.Font, textWidth);
+        // Detail chips deliberately remain single-line. The row layout moves a
+        // whole chip to the next row if needed; it must not split its text.
+        var width = natural;
         chip.AutoEllipsis = false;
         chip.AutoSize = false;
-        // AutoSize labels can retain a stale preferred height after their text
-        // is replaced with inserted line breaks.  Measure the final display
-        // text explicitly, so a chip is always tall enough for every glyph.
-        var measured = TextRenderer.MeasureText(chip.Text, chip.Font, new Size(textWidth, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
-        chip.Size = new Size(width, Math.Max(S(34), measured.Height + chip.Padding.Vertical + S(2)));
+        chip.Size = new Size(width, Math.Max(S(34), TextRenderer.MeasureText(text, chip.Font).Height + chip.Padding.Vertical + S(2)));
         return chip;
-    }
-    private static string WrapDetailChipText(string text, Font font, int maximumTextWidth)
-    {
-        var result = new System.Text.StringBuilder(); var line = new System.Text.StringBuilder();
-        foreach (var character in text)
-        {
-            if (character == '\n') { result.Append(line).AppendLine(); line.Clear(); continue; }
-            var candidate = line.ToString() + character;
-            if (line.Length > 0 && TextRenderer.MeasureText(candidate, font).Width > maximumTextWidth)
-            {
-                result.Append(line).AppendLine(); line.Clear();
-            }
-            line.Append(character);
-        }
-        return result.Append(line).ToString();
     }
     private Panel BuildGreedyTagRow(IEnumerable<Label> chips, int width)
     {

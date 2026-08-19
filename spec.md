@@ -1,6 +1,6 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.1.0a6 (alpha)
+**Current application specification:** 2.1.0a7 (alpha)
 **Savedata format:** v4
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
@@ -118,7 +118,7 @@ The last page is persisted only for Library and game detail. If the launcher is 
 
 Library shows responsive game cards. In normal mode, only a left click opens a game detail page. In game-management mode, right-clicking a card performs the management context action, including deletion; cards do not open games in that mode.
 
-Each card has a fixed portrait 3:4 cover at upper-left, enlarged by 1.2× from the prior card layout. Its two status lamps stack vertically to the cover's right and together match the cover height. The decimal game number is below the cover. The card's lower area is content-sized: the title is measured first, followed immediately by a compact two-line single-select strip and two separate compact, single-line rows for the chosen multi-select dimensions. An individual multi row scrolls horizontally on overflow and never consumes the next dimension's row. The title supports two lines and renders a literal `\\n` as a line break. Every multi value uses its own orange chip, while single chips use purple. When no multi-display selection has been stored, the first two multi-select dimensions are selected automatically. Filtering always considers every dimension.
+Each card has a fixed portrait 3:4 cover at upper-left, enlarged by 1.2× from the prior card layout. Its two status lamps stack vertically to the cover's right and together match the cover height. The decimal game number is below the cover, with a measured height that safely holds large multi-digit IDs. Every card reserves exactly two title lines even when its title uses only one, so all card heights remain uniform. The compact two-line single-select strip follows immediately, followed by two separate compact, single-line rows for the chosen multi-select dimensions. An individual multi row scrolls horizontally on overflow and never consumes the next dimension's row. The title renders a literal `\\n` as a line break. Every multi value uses its own orange chip, while single chips use purple. When no multi-display selection has been stored, the first two multi-select dimensions are selected automatically. Filtering always considers every dimension.
 
 The title search field sits directly left of the rightmost filter control and combines with every other condition using AND; its adjacent clear button removes the search text. The filter control opens a modal filter:
 
@@ -140,7 +140,7 @@ Entering game detail always refreshes the selected game path state. The page is 
 2. **Section 2** — note (**2A**) and play/game lamps (**2B**) split at the horizontal centre. The lamps appear side-by-side, retain their artwork aspect ratio, and match the note reservation height.
 3. **Section 3** — game path, save root, save path, region command and export action. Long paths wrap at Windows path separators instead of creating horizontal scrolling.
 
-Single-select tag chips use a greedy left-to-right layout and wrap only before exceeding the right-side section width. Multi-select values group by dimension: one orange `Dimension :` chip is right-aligned in a common description column, followed by its individual orange value chips in a common left-aligned value column. Values that wrap remain indented to that value column. Long chip text is split into explicit display lines and every chip is explicitly measured from that final text, so the WinForms label never clips it.
+Every detail tag chip is a measured single-line box: its width grows to contain its complete dimension/value string, with no internal text wrapping or ellipsis. Single-select chips use a greedy left-to-right layout and move an entire chip to the next row only before exceeding the right-side section width. Multi-select values group by dimension: one orange `Dimension :` chip is right-aligned in a common description column, followed by its individual orange value chips in a common left-aligned value column. Values that do not fit beside a preceding chip move as whole chips to an indented next row.
 
 ### 8.1 Path-derived state
 
