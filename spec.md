@@ -1,6 +1,6 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.1.0a3 (alpha)
+**Current application specification:** 2.1.0a4 (alpha)
 **Savedata format:** v4
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
@@ -93,7 +93,7 @@ GameShelf uses the normal native Windows title bar. Windows owns caption draggin
 - **Version** (click or `Alt+V` after revealing the menu) stores one launch policy and restarts into its resolved executable. It offers **Automatically select latest version**, **Automatically select latest stable version**, each available stable *major.minor* series, and at most one alpha.
 - A stable series entry such as `2.0` resolves to the highest available stable patch in that series at the moment it is selected, for example `Launcher_2_0_1.exe`. The resulting exact patch is pinned, so even a later `2.0.2` does not replace it automatically.
 - An alpha is shown only when its core version is strictly newer than the highest available stable release. For example, `2.0.1a` is shown with `2.0.0`, but is hidden when stable `2.0.1` exists. Selecting an alpha pins that exact alpha version.
-- The persisted launcher policy is resolved during form loading, before the first paint. A fixed `Launcher.exe` can therefore hand off to the chosen versioned executable without a visible start/close/start flash.
+- The persisted launcher policy is resolved during form loading, before the first paint. Fullscreen restoration is deliberately deferred until that resolution succeeds in the final executable, so a fixed `Launcher.exe` cannot briefly enter fullscreen before handing off to the chosen versioned executable.
 - **Language** (click or `Alt+L`) persists the chosen UI language and restarts the application.
 - The same native menu and reveal behaviour remain available in F11 fullscreen.
 
@@ -118,7 +118,7 @@ The last page is persisted only for Library and game detail. If the launcher is 
 
 Library shows responsive game cards. In normal mode, only a left click opens a game detail page. In game-management mode, right-clicking a card performs the management context action, including deletion; cards do not open games in that mode.
 
-Each card has a fixed portrait 3:4 cover at upper-left, enlarged by 1.2× from the prior card layout. Its two status lamps stack vertically to the cover's right and together match the cover height. The decimal game number is below the cover, followed by a title that supports two lines and renders a literal `\\n` as a line break. The compact single-select strip sits under the title; the larger multi-select strip sits below it, and the card height provides room for its chips. The Library may show up to three selected single-select dimensions and two selected multi-select dimensions; every multi value uses its own orange chip, while single chips use purple. When no multi-display selection has been stored, the first two multi-select dimensions are selected automatically. Filtering always considers every dimension.
+Each card has a fixed portrait 3:4 cover at upper-left, enlarged by 1.2× from the prior card layout. Its two status lamps stack vertically to the cover's right and together match the cover height. The decimal game number is below the cover. Two compact lines are reserved for single-select chips and two separate rows are reserved for the two chosen multi-select dimensions; all remaining lower-card height belongs to the title, which supports two lines and renders a literal `\\n` as a line break. Every multi value uses its own orange chip, while single chips use purple. When no multi-display selection has been stored, the first two multi-select dimensions are selected automatically. Filtering always considers every dimension.
 
 The title search field sits directly left of the rightmost filter control and combines with every other condition using AND; its adjacent clear button removes the search text. The filter control opens a modal filter:
 
@@ -140,7 +140,7 @@ Entering game detail always refreshes the selected game path state. The page is 
 2. **Section 2** — note (**2A**) and play/game lamps (**2B**) split at the horizontal centre. The lamps appear side-by-side, retain their artwork aspect ratio, and match the note reservation height.
 3. **Section 3** — game path, save root, save path, region command and export action. Long paths wrap at Windows path separators instead of creating horizontal scrolling.
 
-Single-select tag chips use a greedy left-to-right layout and wrap only before exceeding the right-side section width. Multi-select values group by dimension: one orange `Dimension :` chip is followed by its individual orange value chips on the same line when possible; values that wrap are indented to the description-chip value column. Their widths measure to their complete text.
+Single-select tag chips use a greedy left-to-right layout and wrap only before exceeding the right-side section width. Multi-select values group by dimension: one orange `Dimension :` chip is right-aligned in a common description column, followed by its individual orange value chips in a common left-aligned value column. Values that wrap remain indented to that value column. Chip text wraps instead of being clipped when it cannot fit its available column.
 
 ### 8.1 Path-derived state
 

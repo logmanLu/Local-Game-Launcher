@@ -53,7 +53,10 @@ public sealed class MainForm : Form
     {
         _store = store; _packages = new PackageService(store); _processTracker = new GameProcessTracker(store); _t = new Localizer(store.Data.Settings.Language);
         Text = "GameShelf"; Font = new Font("Segoe UI", 14f, FontStyle.Bold); MinimumSize = new Size(720, 405); KeyPreview = true; StartPosition = FormStartPosition.Manual; FormBorderStyle = FormBorderStyle.Sizable;
-        RestoreWindow(); Controls.Add(_content); Controls.Add(_top); Controls.Add(_resizeMask); ApplyTheme();
+        // Defer fullscreen until Load has established whether this executable is
+        // the selected launcher version. Otherwise a fixed Launcher.exe can
+        // briefly enter fullscreen before handing off to its versioned target.
+        RestoreWindow(restoreFullscreen: false); Controls.Add(_content); Controls.Add(_top); Controls.Add(_resizeMask); ApplyTheme();
         _selectedId = store.Data.Settings.SelectedGameId;
         _management = false;
         if (_selectedId is not null && store.Data.Games.Any(game => game.Id == _selectedId) && store.Data.Settings.Page is "detail" or "edit") ShowDetail(); else { _selectedId = null; ShowLibrary(); }
@@ -62,7 +65,11 @@ public sealed class MainForm : Form
         // Resolve a launcher policy before the first paint. Doing this from
         // Shown made the fixed Launcher.exe briefly appear before it handed
         // off to the selected versioned executable.
-        Load += (_, _) => { ApplyLauncherSelection(); };
+        Load += (_, _) =>
+        {
+            if (ApplyLauncherSelection()) return;
+            if (_store.Data.Settings.IsFullscreen) ToggleFullscreen();
+        };
         Shown += (_, _) =>
         {
             BuildNativeMenu();
@@ -80,13 +87,13 @@ public sealed class MainForm : Form
         _processTracker.Start();
     }
 
-    private void RestoreWindow()
+    private void RestoreWindow(bool restoreFullscreen = true)
     {
         var s = _store.Data.Settings;
         var screen = Screen.AllScreens.FirstOrDefault(x => x.WorkingArea.IntersectsWith(new Rectangle(s.WindowX, s.WindowY, s.WindowWidth, s.WindowHeight)));
         Bounds = screen is null ? new Rectangle((Screen.PrimaryScreen!.WorkingArea.Width - 1280) / 2, (Screen.PrimaryScreen.WorkingArea.Height - 720) / 2, 1280, 720) : new Rectangle(s.WindowX, s.WindowY, s.WindowWidth, s.WindowHeight);
         if (s.IsMaximized) WindowState = FormWindowState.Maximized;
-        if (s.IsFullscreen) ToggleFullscreen();
+        if (restoreFullscreen && s.IsFullscreen) ToggleFullscreen();
     }
 
     /// <summary>
@@ -826,7 +833,7 @@ public sealed class MainForm : Form
     }
     private Control BuildGameCard(GameEntry game)
     {
-        var cardWidth = S(390); var cardHeight = S(560); var baseColor = Color.FromArgb(38, 42, 42);
+        var cardWidth = S(390); var cardHeight = S(620); var baseColor = Color.FromArgb(38, 42, 42);
         var card = new Panel { Width = cardWidth, Height = cardHeight, Margin = new Padding(S(16)), BorderStyle = BorderStyle.FixedSingle, AccessibleName = game.Title, BackColor = baseColor };
         var imageHeight = S(263); var imageWidth = imageHeight * 3 / 4; var rightLeft = S(9) + imageWidth + S(10); var rightWidth = cardWidth - rightLeft - S(9);
         var image = new PictureBox { Left = S(9), Top = S(9), Width = imageWidth, Height = imageHeight, SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), Cursor = _management ? Cursors.Default : Cursors.Hand };
@@ -834,23 +841,27 @@ public sealed class MainForm : Form
         var playStatus = StatusBlock(StatusKind.Play, game.PlayStatusId, new Rectangle(rightLeft, S(9), rightWidth, statusHeight));
         var gameStatus = StatusBlock(StatusKind.Game, game.GameStatusId, new Rectangle(rightLeft, S(9) + statusHeight + statusGap, rightWidth, statusHeight));
         var id = new Label { Text = game.Id.ToString(), Left = S(12), Top = S(278), Width = cardWidth - S(24), Height = S(30), Font = new Font(Font.FontFamily, S(22), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
-        var title = new Label { Text = DisplayTitle(game.Title), Left = S(12), Top = S(310), Width = cardWidth - S(24), Height = S(60), AutoEllipsis = true, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = Color.White };
-        var singleTags = new FlowLayoutPanel { Left = S(9), Top = S(374), Width = cardWidth - S(18), Height = S(42), AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
+        var multiHeight = S(128); var singleHeight = S(68); var multiTop = cardHeight - S(9) - multiHeight; var singleTop = multiTop - S(6) - singleHeight;
+        var title = new Label { Text = DisplayTitle(game.Title), Left = S(12), Top = S(310), Width = cardWidth - S(24), Height = singleTop - S(316), AutoEllipsis = true, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = Color.White };
+        var singleTags = new FlowLayoutPanel { Left = S(9), Top = singleTop, Width = cardWidth - S(18), Height = singleHeight, AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
         foreach (var dimension in HomeDisplayDimensions())
         {
             var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == dimension.DimensionId);
             var text = index >= 0 ? dimension.Values.GetValueOrDefault(game.Tags.ElementAtOrDefault(index)) ?? string.Empty : string.Empty;
             if (!string.IsNullOrWhiteSpace(text)) singleTags.Controls.Add(FilterChip(text, SingleTagColor));
         }
-        var multiTags = new FlowLayoutPanel { Left = S(9), Top = S(420), Width = cardWidth - S(18), Height = S(131), AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
+        var multiTags = new Panel { Left = S(9), Top = multiTop, Width = cardWidth - S(18), Height = multiHeight, BackColor = baseColor };
+        var multiRowTop = 0;
         foreach (var multiDimension in HomeMultiDisplayDimensions())
         {
             var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == multiDimension.DimensionId);
+            var row = new FlowLayoutPanel { Left = 0, Top = multiRowTop, Width = multiTags.Width, Height = S(60), AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
             foreach (var value in game.MultiTags.ElementAtOrDefault(index) ?? [])
             {
                 var text = multiDimension.Values.GetValueOrDefault(value) ?? "";
-                if (!string.IsNullOrWhiteSpace(text)) multiTags.Controls.Add(FilterChip(text, MultiTagColor));
+                if (!string.IsNullOrWhiteSpace(text)) row.Controls.Add(FilterChip(text, MultiTagColor));
             }
+            multiTags.Controls.Add(row); multiRowTop += S(64);
         }
         card.Controls.AddRange([image, playStatus, gameStatus, id, title, singleTags, multiTags]);
         if (_management)
@@ -1021,6 +1032,7 @@ public sealed class MainForm : Form
         var titleMeasure = TextRenderer.MeasureText(displayTitle, titleFont, new Size(headlineContentWidth, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
         var tagRows = new List<Panel>();
         var singleChips = new List<Label>();
+        var multiGroups = new List<(string Name, List<string> Values)>();
         for (var index = 0; index < _store.Data.TagSchema.Count; index++)
         {
             var dimension = _store.Data.TagSchema[index];
@@ -1029,15 +1041,17 @@ public sealed class MainForm : Form
                 var id = game.Tags.ElementAtOrDefault(index);
                 var value = dimension.Values.GetValueOrDefault(id) ?? "";
                 if (string.IsNullOrWhiteSpace(value)) continue;
-                singleChips.Add(DetailTagChip($"{dimension.Name} : {value}", SingleTagColor));
+                singleChips.Add(DetailTagChip($"{dimension.Name} : {value}", SingleTagColor, headlineContentWidth));
                 continue;
             }
             var values = (game.MultiTags.ElementAtOrDefault(index) ?? [])
                 .Select(id => dimension.Values.GetValueOrDefault(id) ?? "")
                 .Where(value => !string.IsNullOrWhiteSpace(value)).ToList();
-            if (values.Count > 0) tagRows.Add(BuildMultiTagRow(dimension.Name, values, headlineContentWidth));
+            if (values.Count > 0) multiGroups.Add((dimension.Name, values));
         }
         if (singleChips.Count > 0) tagRows.Insert(0, BuildGreedyTagRow(singleChips, headlineContentWidth));
+        var multiDescriptionWidth = multiGroups.Count == 0 ? 0 : multiGroups.Max(group => DetailTagChip(group.Name + " :", MultiTagColor, headlineContentWidth / 2).Width);
+        foreach (var group in multiGroups) tagRows.Add(BuildMultiTagRow(group.Name, group.Values, headlineContentWidth, multiDescriptionWidth));
         var tagHeight = Math.Max(S(38), tagRows.Sum(row => row.Height + S(6)));
         var contentFirstHeight = S(104) + titleMeasure.Height + S(16) + tagHeight;
         // A portrait cover should never collapse below this presentation size on
@@ -1099,13 +1113,14 @@ public sealed class MainForm : Form
         page.Controls.Add(first, 0, 0); page.Controls.Add(second, 0, 1); page.Controls.Add(metadata, 0, 2); page.PerformLayout();
         page.Height = firstHeight + secondHeight + metadata.PreferredSize.Height + S(84); holder.Height = page.Height; holder.Controls.Add(page); _content.Controls.Add(holder); EnableWheelScroll(page);
     }
-    private Label DetailTagChip(string text, Color color)
+    private Label DetailTagChip(string text, Color color, int maximumWidth = int.MaxValue)
     {
         var chip = FilterChip(text, color);
         chip.Margin = Padding.Empty;
         chip.AutoSize = false;
-        var size = TextRenderer.MeasureText(text, chip.Font);
-        chip.Width = size.Width + S(18);
+        var natural = TextRenderer.MeasureText(text, chip.Font).Width + S(18);
+        chip.Width = Math.Min(maximumWidth, natural);
+        var size = TextRenderer.MeasureText(text, chip.Font, new Size(Math.Max(S(20), chip.Width - S(18)), int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
         chip.Height = Math.Max(S(34), size.Height + S(10));
         return chip;
     }
@@ -1121,16 +1136,18 @@ public sealed class MainForm : Form
         row.Height = Math.Max(S(34), y + lineHeight);
         return row;
     }
-    private Panel BuildMultiTagRow(string dimensionName, IEnumerable<string> values, int width)
+    private Panel BuildMultiTagRow(string dimensionName, IEnumerable<string> values, int width, int descriptionWidth)
     {
         var row = new Panel { Width = width, BackColor = Color.Transparent };
         var description = DetailTagChip(dimensionName + " :", MultiTagColor);
+        description.Width = descriptionWidth;
+        description.TextAlign = ContentAlignment.MiddleRight;
         description.Location = Point.Empty; row.Controls.Add(description);
-        var indent = Math.Min(width - S(24), description.Width + S(8));
+        var indent = Math.Min(width - S(24), descriptionWidth + S(8));
         var x = indent; var y = 0; var lineHeight = description.Height;
         foreach (var value in values)
         {
-            var chip = DetailTagChip(value, MultiTagColor);
+            var chip = DetailTagChip(value, MultiTagColor, Math.Max(S(70), width - indent));
             if (x > indent && x + chip.Width > width) { y += lineHeight + S(6); x = indent; lineHeight = 0; }
             chip.Location = new Point(x, y); row.Controls.Add(chip); x += chip.Width + S(6); lineHeight = Math.Max(lineHeight, chip.Height);
         }

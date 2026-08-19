@@ -1,8 +1,14 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0a3` (alpha)
+**Current application patch:** `2.1.0a4` (alpha)
 
 ## Patch history
+
+### 2.1.0a4 (alpha)
+
+- Deferred fullscreen restoration until launcher-policy handoff has completed in the final executable. Log analysis showed the fixed `Launcher.exe` was entering fullscreen in its constructor before its Load-time handoff, causing the reported one-time small-window/fullscreen flash.
+- Library cards now reserve two rows for single-select tags and two independent rows for the selected multi-select dimensions; the remaining space belongs to the title. The card height was increased to prevent long titles and multi tags being clipped.
+- Detail multi-select descriptions now use a shared right-aligned colon column and values use a shared left-aligned, indented column. Detail tag chips wrap their text rather than truncating it.
 
 ### 2.1.0a (alpha)
 
