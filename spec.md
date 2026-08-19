@@ -1,7 +1,7 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.0.2a (alpha)
-**Savedata format:** v2
+**Current application specification:** 2.1.0a (alpha)
+**Savedata format:** v3
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
 ## 1. Product boundary and platform
@@ -59,17 +59,17 @@ The user-owned `savedata/` directory is never included in source-control or rele
 
 ## 4. Persistent data contract
 
-`savedata/gameshelf.json` serializes `AppData`. Its current `Version` is `2`.
+`savedata/gameshelf.json` serializes `AppData`. Its current `Version` is `3`.
 
 | Area | Stored data |
 | --- | --- |
-| `Settings` | UI language, persisted launcher-version policy, last supported page and selected game, normal/fullscreen window state and bounds, filters, Library-card dimension choices, custom button vectors, and transient process identities. |
+| `Settings` | UI language, persisted launcher-version policy, last supported page and selected game, normal/fullscreen window state and bounds, title/status/tag filters, Library-card dimension choices, custom button vectors, and transient process identities. |
 | `RcRootPath` | Absolute path of the common `rc` game-resource root. |
 | `SaveRoots` | Named Windows path templates used as save roots. |
 | `RegionCommands` / `RegionAliases` | Region-launch commands and their short display aliases. |
-| `TagSchema` | Ordered dimensions, each with an integer ID and mapped display values. |
+| `TagSchema` | Ordered single-select or multi-select dimensions, each with an integer ID and mapped display values. |
 | `PlayStatuses` / `GameStatuses` | Ordered status definitions: ID, display name, RGB/hex colour, white vector icon, default flag, and (for system game statuses) role. |
-| `Games` | Individual game records: ID, title, managed cover filename, note, relative game/save paths, selected save root, statuses, region command and one value per tag dimension. |
+| `Games` | Individual game records: ID, title, managed cover filename, note, relative game/save paths, selected save root, statuses, region command, one value per single-select dimension, and one-or-more values per multi-select dimension. |
 
 Every persistent DTO supports `JsonExtensionData`. Therefore unknown properties from a newer launcher are round-tripped rather than intentionally discarded. Older formats are backed up in `savedata/backups/` before in-place normalization. A newer savedata version is not downgraded.
 
@@ -118,16 +118,19 @@ The last page is persisted only for Library and game detail. If the launcher is 
 
 Library shows responsive game cards. In normal mode, only a left click opens a game detail page. In game-management mode, right-clicking a card performs the management context action, including deletion; cards do not open games in that mode.
 
-Each card contains a portrait 3:4 cover, number, title (up to two lines), administrator-selected tag chips, and two status lamps. The card uses up to three chosen tag dimensions for display, while filtering always considers every dimension.
+Each card has a fixed portrait 3:4 cover at upper-left. Its two status lamps stack vertically to the cover's right and together match the cover height. The decimal game number is below the cover, followed by a title that supports two lines and renders a literal `\\n` as a line break. Single-select chips sit under the title and multi-select chips sit below those. The Library may show up to three selected single-select dimensions and one selected multi-select dimension; every multi value uses its own orange chip, while single chips use purple. Filtering always considers every dimension.
 
-The rightmost header filter control opens a modal multi-select dimension filter:
+The title search field sits directly left of the rightmost filter control and combines with every other condition using AND; its adjacent clear button removes the search text. The filter control opens a modal filter:
 
 - `none` values cannot be selected.
-- Multiple values within one dimension are ORed; different dimensions are ANDed.
+- Multiple values within one single-select dimension are ORed; different dimensions are ANDed.
+- A multi-select dimension matches when the selected values intersect that game's selected values.
+- Play status and game status are independent single-choice filters.
+- Tag, play-status and game-status selection tiles use distinct colours.
 - Clear removes all conditions.
 - After applying, active selection chips appear immediately to the left of the filter control, right-aligned and wrapping when necessary.
 
-In Library management, the dimension selector chooses up to three displayed card dimensions. Its choice tiles measure to the dimension text rather than using fixed-size controls.
+In Library management, the dimension selector chooses up to three displayed single-select dimensions plus one displayed multi-select dimension. Its choice tiles measure to the dimension text rather than using fixed-size controls.
 
 ## 8. Game detail page
 
@@ -147,7 +150,7 @@ Tag chips use one row per value and display `Dimension : mapped value`, includin
 - Valid game/save paths are light green and clickable to open the resolved folder. Invalid paths are bright red and are not clickable.
 - Launch is shown only when the resolved game executable is valid. It is always the normal Launch icon; the Stop-game feature was intentionally removed.
 
-The play-status lamp accepts a double click within 0.8 seconds to move to the next configured play status, cycling at the end. Status icon meanings come from the stored vectors; defaults include hollow/half/filled squares for play states and filled circle/hollow circle/cross/hollow cloud for game states.
+The play-status lamp accepts a double click within 0.8 seconds to move to the next configured play status, cycling at the end. The game-status lamp accepts the same double click only while its executable path is invalid; it cycles **In other machine**, **Data missing**, and **Storaged**. A valid path forms a wall: the forced green installed state never cycles to an invalid state. Status icon meanings come from the stored vectors; defaults include hollow/half/filled squares for play states and filled circle/hollow circle/cross/hollow cloud for game states.
 
 ## 9. Editing modes
 
@@ -155,7 +158,7 @@ The play-status lamp accepts a double click within 0.8 seconds to move to the ne
 
 First-level edit changes one game. It provides boxed interactive text controls for title, note, paths and selectable properties. Image and save/game path selection controls are placed below the normal properties in the scrollable page. Choosing a cover opens a crop/zoom surface before the managed image is saved.
 
-The selected save root, region-command alias and tag values are shown as mapped text; persisted IDs remain internal. Play status is not set here because it is changed from the detail lamp.
+The selected save root, region-command alias and tag values are shown as mapped text; persisted IDs remain internal. A multi-select tag uses orange mutually-aware checkbox tiles: at least one value is required, and `none` cannot coexist with another value. Play status is not set here because it is changed from the detail lamp. Game status is also absent: it is path-derived and can only be cycled from the detail lamp while unavailable.
 
 ### 9.2 Second-level global management
 
@@ -166,11 +169,11 @@ Global management owns:
 - region commands (full command plus required short alias);
 - play and game statuses, including RGB/hex colour and vector artwork;
 - play-status ordering through adjacent two-way swaps;
-- tag dimensions and mapped values;
+- single-select and multi-select tag dimensions and mapped values;
 - the Library-card display-dimension selection; and
 - all logical action-button icons.
 
-Property collections are tiles rather than a fixed list: simple properties use one tile per value plus an Add tile; tag dimensions are scrollable rows with an Add-value tile at the row end and an Add-dimension tile at the column end. Left click edits a value. Right click opens only the edit/delete context menu (it must not also open the edit dialog). Management sections shrink to their content height instead of claiming an entire viewport.
+Property collections are tiles rather than a fixed list: simple properties use one tile per value plus an Add tile; tag dimensions are scrollable rows with an Add-value tile at the row end and an Add-dimension tile at the column end. A dimension's context menu can change it between single-select and multi-select while preserving a compatible game value. Left click edits a value. Right click opens only the edit/delete context menu (it must not also open the edit dialog). Every edit/delete context menu uses the enlarged dark GameShelf menu renderer rather than the default light menu appearance. Management sections shrink to their content height instead of claiming an entire viewport.
 
 The vector icon editor previews existing custom artwork or the logical built-in glyph when no custom vector is saved. It supports freehand line, straight line, hollow circle, hollow triangle, hollow rectangle, and Paint-style flood fill of an enclosed region. New geometry can be adjusted immediately after creation. Vectors render as white marks over the selected coloured background.
 

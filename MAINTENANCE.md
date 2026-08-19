@@ -1,8 +1,17 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.2a` (alpha)
+**Current application patch:** `2.1.0a` (alpha)
 
 ## Patch history
+
+### 2.1.0a (alpha)
+
+- Upgraded savedata to format v3. Dimensions can now be marked single-select or multi-select. A multi-select game value is a non-empty set; `none` is its default and is exclusive of other values. Existing saves normalize their new collections without discarding unknown JSON fields.
+- Removed manual Game Status editing from first-level game edit and protected it in `DataStore.UpdateGame`. Entering Library/detail and completing a game edit refreshes the executable-derived status: valid paths force Installed locally; an invalid game may cycle only In other machine, Data missing and Storaged by double-clicking its detail lamp.
+- Added independent one-choice Play Status and Game Status filters, AND-combined title search with a clear button, and intersection matching for multi-select dimensions. Filter tiles distinguish tag, play and game attributes by colour.
+- Library cards now show up to three purple single-select dimension chips plus one orange multi-select dimension beneath them. The fixed 3:4 cover stays upper-left, two lamps stack to its right, then the decimal ID and two-line/`\\n`-aware title appear below the cover.
+- Replaced all management edit/delete context menus with a larger dark GameShelf renderer and added a global dimension action to switch between single- and multi-select behaviour.
+- Imported games now begin with the path-derived unavailable default game state because import resets their local paths; import no longer asks the user to manually choose a Game Status.
 
 ### 2.0.2a (alpha)
 

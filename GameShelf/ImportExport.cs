@@ -21,7 +21,15 @@ public sealed class PackageService(DataStore store)
         for (var i = 0; i < _store.Data.TagSchema.Count; i++)
         {
             var d = _store.Data.TagSchema[i];
-            manifest.Dimensions.Add(new ImportedDimension { SourceDimensionId = d.DimensionId, Name = d.Name, Values = new Dictionary<int, string>(d.Values), GameValue = game.Tags[i] });
+            manifest.Dimensions.Add(new ImportedDimension
+            {
+                SourceDimensionId = d.DimensionId,
+                Name = d.Name,
+                Values = new Dictionary<int, string>(d.Values),
+                GameValue = game.Tags[i],
+                IsMultiSelect = d.IsMultiSelect,
+                GameValues = d.IsMultiSelect ? new List<int>(game.MultiTags.ElementAtOrDefault(i) ?? []) : []
+            });
         }
         var sourceImage = _store.ImagePath(game);
         if (!string.IsNullOrEmpty(sourceImage) && File.Exists(sourceImage)) manifest.ImageEntry = "image.png";
@@ -43,20 +51,31 @@ public sealed class PackageService(DataStore store)
         return manifest;
     }
 
-    public void Import(string packagePath, ImportedGame manifest, IReadOnlyDictionary<int, (int dimensionId, int value)> mappings, int playStatus, int gameStatus, int regionCommand)
+    public void Import(string packagePath, ImportedGame manifest, IReadOnlyDictionary<int, (int dimensionId, int value)> mappings, int playStatus, int regionCommand)
     {
         if (_store.Data.Games.Any(g => g.Id == manifest.Game.Id)) throw new InvalidOperationException("A game with this ID already exists.");
         var game = Clone(manifest.Game);
         game.GamePath = ""; game.SavePath = ""; game.SaveRootId = Defaults.SaveRootGameDirectoryId; game.ImageFile = "";
         game.Tags = Enumerable.Repeat(0, _store.Data.TagSchema.Count).ToList();
+        game.MultiTags = _store.Data.TagSchema.Select(dimension => dimension.IsMultiSelect ? new List<int> { 0 } : []).ToList();
         foreach (var item in manifest.Dimensions)
             if (mappings.TryGetValue(item.SourceDimensionId, out var map))
             {
                 var position = _store.Data.TagSchema.FindIndex(d => d.DimensionId == map.dimensionId);
-                if (position >= 0 && _store.Data.TagSchema[position].Values.ContainsKey(map.value)) game.Tags[position] = map.value;
+                if (position >= 0 && _store.Data.TagSchema[position].Values.ContainsKey(map.value))
+                {
+                    if (_store.Data.TagSchema[position].IsMultiSelect)
+                    {
+                        var imported = item.GameValues.Where(value => value != 0 && _store.Data.TagSchema[position].Values.ContainsKey(value)).Distinct().ToList();
+                        game.MultiTags[position] = imported.Count == 0 ? [map.value] : imported;
+                    }
+                    else game.Tags[position] = map.value;
+                }
             }
         game.PlayStatusId = _store.Data.PlayStatuses.Any(s => s.Id == playStatus) ? playStatus : Defaults.PlayDefaultId;
-        game.GameStatusId = _store.Data.GameStatuses.Any(s => s.Id == gameStatus) ? gameStatus : Defaults.GameDefaultId;
+        // Imported paths are intentionally cleared, so game status begins in
+        // the path-derived unavailable state rather than being user-selected.
+        game.GameStatusId = Defaults.GameDefaultId;
         game.RegionCommandId = _store.Data.RegionCommands.ContainsKey(regionCommand) ? regionCommand : 0;
         if (string.IsNullOrEmpty(manifest.ImageEntry)) { _store.Data.Games.Add(game); _store.Save(); return; }
 
@@ -77,5 +96,5 @@ public sealed class PackageService(DataStore store)
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }
 
-    public static GameEntry Clone(GameEntry game) => new() { Id = game.Id, Title = game.Title, ImageFile = game.ImageFile, Note = game.Note, GamePath = game.GamePath, SaveMethod = game.SaveMethod, SaveRootId = game.SaveRootId, SavePath = game.SavePath, PlayStatusId = game.PlayStatusId, GameStatusId = game.GameStatusId, RegionCommandId = game.RegionCommandId, Tags = [.. game.Tags] };
+    public static GameEntry Clone(GameEntry game) => new() { Id = game.Id, Title = game.Title, ImageFile = game.ImageFile, Note = game.Note, GamePath = game.GamePath, SaveMethod = game.SaveMethod, SaveRootId = game.SaveRootId, SavePath = game.SavePath, PlayStatusId = game.PlayStatusId, GameStatusId = game.GameStatusId, RegionCommandId = game.RegionCommandId, Tags = [.. game.Tags], MultiTags = game.MultiTags.Select(values => new List<int>(values)).ToList() };
 }

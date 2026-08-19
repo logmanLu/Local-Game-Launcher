@@ -69,8 +69,9 @@ public sealed class DataStore : IDisposable
         }
 
         var sourceVersion = Data.Version;
-        // v1 -> v2: permanent dark UI removes the obsolete Theme field. Other
-        // future fields remain in JsonExtensionData and are round-tripped.
+        // v1 -> v2: permanent dark UI removes the obsolete Theme field.
+        // v2 -> v3: multi-select dimension collections are normalized below.
+        // Future fields remain in JsonExtensionData and are round-tripped.
         Data.Settings ??= new AppSettings();
         Data.Settings.UnknownFields?.Remove("Theme");
         Data.Version = AppData.CurrentFormatVersion;
@@ -97,7 +98,14 @@ public sealed class DataStore : IDisposable
     public void AddGame(int id)
     {
         if (Data.Games.Any(g => g.Id == id)) throw new InvalidOperationException("A game with this ID already exists.");
-        Data.Games.Add(new GameEntry { Id = id, Tags = Enumerable.Repeat(0, Data.TagSchema.Count).ToList(), PlayStatusId = Defaults.PlayDefaultId, GameStatusId = Defaults.GameDefaultId });
+        Data.Games.Add(new GameEntry
+        {
+            Id = id,
+            Tags = Enumerable.Repeat(0, Data.TagSchema.Count).ToList(),
+            MultiTags = Data.TagSchema.Select(dimension => dimension.IsMultiSelect ? new List<int> { 0 } : []).ToList(),
+            PlayStatusId = Defaults.PlayDefaultId,
+            GameStatusId = Defaults.GameDefaultId
+        });
         Save();
     }
 
@@ -177,6 +185,9 @@ public sealed class DataStore : IDisposable
         var current = GetGame(proposed.Id);
         var index = Data.Games.IndexOf(current);
         proposed.ImageFile = current.ImageFile; // only SetImage owns managed files
+        // Game availability is determined solely from the executable path.  A
+        // first-level edit must never overwrite that derived state.
+        proposed.GameStatusId = current.GameStatusId;
         proposed.Title = TextRules.TrimGraphemes(proposed.Title, 50, "unknown");
         proposed.Note = TextRules.TrimGraphemes(proposed.Note, 150, "");
         proposed.SaveMethod = TextRules.TrimGraphemes(proposed.SaveMethod, 20, "");
@@ -198,13 +209,13 @@ public sealed class DataStore : IDisposable
         if (!string.IsNullOrEmpty(old) && File.Exists(old)) File.Delete(old);
     }
 
-    public void AddDimension(string name)
+    public void AddDimension(string name, bool isMultiSelect = false)
     {
         name = name.Trim();
         if (name.Length == 0) throw new InvalidOperationException("Dimension name is required.");
         var next = Data.TagSchema.Count == 0 ? 1 : Data.TagSchema.Max(x => x.DimensionId) + 1;
-        Data.TagSchema.Add(new TagDimension { DimensionId = next, Name = name });
-        foreach (var game in Data.Games) game.Tags.Add(0);
+        Data.TagSchema.Add(new TagDimension { DimensionId = next, Name = name, IsMultiSelect = isMultiSelect });
+        foreach (var game in Data.Games) { game.Tags.Add(0); game.MultiTags.Add(isMultiSelect ? [0] : []); }
         Save();
     }
 
@@ -219,9 +230,13 @@ public sealed class DataStore : IDisposable
     {
         var position = Data.TagSchema.FindIndex(d => d.DimensionId == id);
         if (position < 0) throw new InvalidOperationException("Dimension not found.");
-        var affected = Data.Games.Count(g => g.Tags.ElementAtOrDefault(position) != 0);
+        var affected = Data.Games.Count(g => Data.TagSchema[position].IsMultiSelect ? g.MultiTags.ElementAtOrDefault(position)?.Any(value => value != 0) == true : g.Tags.ElementAtOrDefault(position) != 0);
         Data.TagSchema.RemoveAt(position);
-        foreach (var game in Data.Games) if (game.Tags.Count > position) game.Tags.RemoveAt(position);
+        foreach (var game in Data.Games)
+        {
+            if (game.Tags.Count > position) game.Tags.RemoveAt(position);
+            if (game.MultiTags.Count > position) game.MultiTags.RemoveAt(position);
+        }
         Save();
         return affected;
     }
@@ -248,7 +263,40 @@ public sealed class DataStore : IDisposable
         var pos = Data.TagSchema.FindIndex(d => d.DimensionId == dimensionId);
         var d = Dimension(dimensionId);
         if (!d.Values.Remove(value)) throw new InvalidOperationException("Value not found.");
-        foreach (var game in Data.Games) if (game.Tags.ElementAtOrDefault(pos) == value) game.Tags[pos] = 0;
+        foreach (var game in Data.Games)
+        {
+            if (d.IsMultiSelect)
+            {
+                var values = game.MultiTags.ElementAtOrDefault(pos);
+                values?.Remove(value);
+                if (values is null || values.Count == 0) { while (game.MultiTags.Count <= pos) game.MultiTags.Add([]); game.MultiTags[pos] = [0]; }
+            }
+            else if (game.Tags.ElementAtOrDefault(pos) == value) game.Tags[pos] = 0;
+        }
+        Save();
+    }
+
+    public void SetDimensionMultiSelect(int id, bool isMultiSelect)
+    {
+        var position = Data.TagSchema.FindIndex(dimension => dimension.DimensionId == id);
+        if (position < 0) throw new InvalidOperationException("Dimension not found.");
+        var dimension = Data.TagSchema[position];
+        if (dimension.IsMultiSelect == isMultiSelect) return;
+        dimension.IsMultiSelect = isMultiSelect;
+        foreach (var game in Data.Games)
+        {
+            while (game.MultiTags.Count <= position) game.MultiTags.Add([]);
+            if (isMultiSelect)
+            {
+                game.MultiTags[position] = [game.Tags.ElementAtOrDefault(position)];
+                game.Tags[position] = 0;
+            }
+            else
+            {
+                game.Tags[position] = game.MultiTags[position].FirstOrDefault(value => value != 0);
+                game.MultiTags[position] = [];
+            }
+        }
         Save();
     }
 
@@ -352,6 +400,18 @@ public sealed class DataStore : IDisposable
         Save();
     }
 
+    public void SetNextInvalidGameStatus(int gameId)
+    {
+        var game = GetGame(gameId);
+        if (PathRules.IsValidGameExe(ResolveGamePath(game.GamePath))) return;
+        var invalidStatuses = new[] { Defaults.OtherMachineRole, Defaults.MissingRole, Defaults.StoragedRole }
+            .Select(GameStatusByRole).OfType<GameStatus>().ToList();
+        if (invalidStatuses.Count == 0) return;
+        var index = invalidStatuses.FindIndex(status => status.Id == game.GameStatusId);
+        game.GameStatusId = invalidStatuses[(index + 1 + invalidStatuses.Count) % invalidStatuses.Count].Id;
+        Save();
+    }
+
     public void MovePlayStatus(int id, int direction)
     {
         var index = Data.PlayStatuses.FindIndex(status => status.Id == id);
@@ -362,10 +422,11 @@ public sealed class DataStore : IDisposable
         Save();
     }
 
-    public void SetHomeDisplayDimensions(IEnumerable<int> dimensionIds)
+    public void SetHomeDisplayDimensions(IEnumerable<int> dimensionIds, int? multiDimensionId)
     {
-        var valid = new HashSet<int>(Data.TagSchema.Select(dimension => dimension.DimensionId));
-        Data.Settings.HomeDisplayDimensionIds = dimensionIds.Where(valid.Contains).Distinct().Take(3).ToList();
+        var single = new HashSet<int>(Data.TagSchema.Where(dimension => !dimension.IsMultiSelect).Select(dimension => dimension.DimensionId));
+        Data.Settings.HomeDisplayDimensionIds = dimensionIds.Where(single.Contains).Distinct().Take(3).ToList();
+        Data.Settings.HomeMultiDisplayDimensionId = Data.TagSchema.Any(dimension => dimension.IsMultiSelect && dimension.DimensionId == multiDimensionId) ? multiDimensionId : null;
         Normalize(); Save();
     }
 
@@ -397,6 +458,7 @@ public sealed class DataStore : IDisposable
                 ? launcherSelection
                 : "auto-latest";
         Data.Settings.SelectedTagFilters ??= [];
+        Data.Settings.TitleSearch ??= "";
         Data.Settings.HomeDisplayDimensionIds ??= [];
         Data.Settings.ButtonIcons ??= [];
         Data.Settings.RunningGameProcesses ??= [];
@@ -409,12 +471,14 @@ public sealed class DataStore : IDisposable
             if (values.Count == 0) Data.Settings.SelectedTagFilters.Remove(dimensionId);
         }
         Data.Settings.HomeDisplayDimensionIds = Data.Settings.HomeDisplayDimensionIds
-            .Where(dimensionsById.ContainsKey).Distinct().Take(3).ToList();
-        foreach (var dimension in Data.TagSchema)
+            .Where(id => dimensionsById.TryGetValue(id, out var dimension) && !dimension.IsMultiSelect).Distinct().Take(3).ToList();
+        foreach (var dimension in Data.TagSchema.Where(dimension => !dimension.IsMultiSelect))
         {
             if (Data.Settings.HomeDisplayDimensionIds.Count >= 3) break;
             if (!Data.Settings.HomeDisplayDimensionIds.Contains(dimension.DimensionId)) Data.Settings.HomeDisplayDimensionIds.Add(dimension.DimensionId);
         }
+        if (Data.Settings.HomeMultiDisplayDimensionId is not int selectedMulti || !dimensionsById.TryGetValue(selectedMulti, out var multiDimension) || !multiDimension.IsMultiSelect)
+            Data.Settings.HomeMultiDisplayDimensionId = null;
         Data.Games ??= [];
         if (string.IsNullOrWhiteSpace(Data.RcRootPath))
         {
@@ -424,6 +488,10 @@ public sealed class DataStore : IDisposable
         Data.PlayStatuses = Data.PlayStatuses?.Any() == true ? Data.PlayStatuses : Defaults.PlayStatuses();
         Data.GameStatuses = Data.GameStatuses?.Any() == true ? Data.GameStatuses : Defaults.GameStatuses();
         NormalizeStatusIcons();
+        if (Data.Settings.SelectedPlayStatusFilter is int playFilter && !Data.PlayStatuses.Any(status => status.Id == playFilter))
+            Data.Settings.SelectedPlayStatusFilter = null;
+        if (Data.Settings.SelectedGameStatusFilter is int gameFilter && !Data.GameStatuses.Any(status => status.Id == gameFilter))
+            Data.Settings.SelectedGameStatusFilter = null;
         foreach (var g in Data.Games)
         {
             if (Path.IsPathFullyQualified(g.GamePath) && !string.IsNullOrWhiteSpace(Data.RcRootPath))
@@ -438,9 +506,28 @@ public sealed class DataStore : IDisposable
                 if (matching.root is not null) { g.SaveRootId = matching.root.Id; g.SavePath = matching.relative; }
             }
             g.Tags ??= [];
+            g.MultiTags ??= [];
             while (g.Tags.Count < Data.TagSchema.Count) g.Tags.Add(0);
             while (g.Tags.Count > Data.TagSchema.Count) g.Tags.RemoveAt(g.Tags.Count - 1);
-            for (var i = 0; i < g.Tags.Count; i++) if (!Data.TagSchema[i].Values.ContainsKey(g.Tags[i])) g.Tags[i] = 0;
+            while (g.MultiTags.Count < Data.TagSchema.Count) g.MultiTags.Add([]);
+            while (g.MultiTags.Count > Data.TagSchema.Count) g.MultiTags.RemoveAt(g.MultiTags.Count - 1);
+            for (var i = 0; i < g.Tags.Count; i++)
+            {
+                var dimension = Data.TagSchema[i];
+                if (!dimension.IsMultiSelect)
+                {
+                    if (!dimension.Values.ContainsKey(g.Tags[i])) g.Tags[i] = 0;
+                    g.MultiTags[i] = [];
+                    continue;
+                }
+                var values = g.MultiTags[i] ??= [];
+                values.RemoveAll(value => !dimension.Values.ContainsKey(value));
+                values = values.Distinct().ToList();
+                if (values.Count == 0) values.Add(0);
+                if (values.Count > 1) values.RemoveAll(value => value == 0);
+                g.MultiTags[i] = values;
+                g.Tags[i] = 0;
+            }
             if (!Data.RegionCommands.ContainsKey(g.RegionCommandId)) g.RegionCommandId = 0;
             if (!Data.PlayStatuses.Any(s => s.Id == g.PlayStatusId)) g.PlayStatusId = Data.PlayStatuses.Single(s => s.IsDefault).Id;
             if (!Data.GameStatuses.Any(s => s.Id == g.GameStatusId)) g.GameStatusId = Data.GameStatuses.Single(s => s.IsDefault).Id;
