@@ -487,6 +487,11 @@ public sealed class DataStore : IDisposable
             Data.Settings.HomeMultiDisplayDimensionIds.Add(legacyMulti);
         Data.Settings.HomeMultiDisplayDimensionIds = Data.Settings.HomeMultiDisplayDimensionIds
             .Where(id => dimensionsById.TryGetValue(id, out var multiDimension) && multiDimension.IsMultiSelect).Distinct().Take(2).ToList();
+        foreach (var dimension in Data.TagSchema.Where(dimension => dimension.IsMultiSelect))
+        {
+            if (Data.Settings.HomeMultiDisplayDimensionIds.Count >= 2) break;
+            if (!Data.Settings.HomeMultiDisplayDimensionIds.Contains(dimension.DimensionId)) Data.Settings.HomeMultiDisplayDimensionIds.Add(dimension.DimensionId);
+        }
         Data.Settings.HomeMultiDisplayDimensionId = Data.Settings.HomeMultiDisplayDimensionIds.Count > 0 ? Data.Settings.HomeMultiDisplayDimensionIds[0] : null;
         Data.Games ??= [];
         if (string.IsNullOrWhiteSpace(Data.RcRootPath))

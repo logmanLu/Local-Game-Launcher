@@ -1,6 +1,6 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0a2` (alpha)
+**Current application patch:** `2.1.0a3` (alpha)
 
 ## Patch history
 
@@ -19,10 +19,12 @@
 - Enlarged the fixed card cover by 1.2×, compressed the right-side status-lamp width and lower single-select strip, and reserved the gained lower-card space for multi-select chips.
 - Made multi-select support explicit in both edit layers: first-level game edit labels every multi-select selection row and provides its orange one-or-more value picker; second-level management labels its shared dimension area and explains right-click type/value operations.
 
-### 2.1.0a2 (alpha)
+### 2.1.0a3 (alpha)
 
 - Fixed the custom dark edit/delete context menu items being allocated at the native default width, which truncated their labels.
 - Global-management mutations now restore the previous vertical scroll offset after rebuilding the page, so adding or editing a dimension value remains at the row being worked on. The same restoration applies to save roots, region commands, statuses, button icons, dimension changes and their legacy management controls.
+- Detail tags now pack single-select chips greedily across each line. Multi-select tags use one description chip per dimension and individually wrapped, indented value chips.
+- Library cards are slightly taller to show selected multi-select dimensions. When none are explicitly chosen, the first two available multi-select dimensions are selected automatically.
 
 ### 2.0.2a (alpha)
 

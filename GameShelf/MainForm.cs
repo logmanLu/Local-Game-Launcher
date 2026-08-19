@@ -826,7 +826,7 @@ public sealed class MainForm : Form
     }
     private Control BuildGameCard(GameEntry game)
     {
-        var cardWidth = S(390); var cardHeight = S(510); var baseColor = Color.FromArgb(38, 42, 42);
+        var cardWidth = S(390); var cardHeight = S(560); var baseColor = Color.FromArgb(38, 42, 42);
         var card = new Panel { Width = cardWidth, Height = cardHeight, Margin = new Padding(S(16)), BorderStyle = BorderStyle.FixedSingle, AccessibleName = game.Title, BackColor = baseColor };
         var imageHeight = S(263); var imageWidth = imageHeight * 3 / 4; var rightLeft = S(9) + imageWidth + S(10); var rightWidth = cardWidth - rightLeft - S(9);
         var image = new PictureBox { Left = S(9), Top = S(9), Width = imageWidth, Height = imageHeight, SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), Cursor = _management ? Cursors.Default : Cursors.Hand };
@@ -842,7 +842,7 @@ public sealed class MainForm : Form
             var text = index >= 0 ? dimension.Values.GetValueOrDefault(game.Tags.ElementAtOrDefault(index)) ?? string.Empty : string.Empty;
             if (!string.IsNullOrWhiteSpace(text)) singleTags.Controls.Add(FilterChip(text, SingleTagColor));
         }
-        var multiTags = new FlowLayoutPanel { Left = S(9), Top = S(420), Width = cardWidth - S(18), Height = S(81), AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
+        var multiTags = new FlowLayoutPanel { Left = S(9), Top = S(420), Width = cardWidth - S(18), Height = S(131), AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
         foreach (var multiDimension in HomeMultiDisplayDimensions())
         {
             var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == multiDimension.DimensionId);
@@ -1019,19 +1019,26 @@ public sealed class MainForm : Form
         var titleFont = new Font(Font.FontFamily, S(34), FontStyle.Bold);
         var displayTitle = DisplayTitle(game.Title);
         var titleMeasure = TextRenderer.MeasureText(displayTitle, titleFont, new Size(headlineContentWidth, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
-        var tagChips = new List<Label>();
+        var tagRows = new List<Panel>();
+        var singleChips = new List<Label>();
         for (var index = 0; index < _store.Data.TagSchema.Count; index++)
         {
             var dimension = _store.Data.TagSchema[index];
-            var values = dimension.IsMultiSelect ? game.MultiTags.ElementAtOrDefault(index) ?? [] : [game.Tags.ElementAtOrDefault(index)];
-            foreach (var id in values)
+            if (!dimension.IsMultiSelect)
             {
+                var id = game.Tags.ElementAtOrDefault(index);
                 var value = dimension.Values.GetValueOrDefault(id) ?? "";
                 if (string.IsNullOrWhiteSpace(value)) continue;
-                var chip = FilterChip($"{dimension.Name} : {value}", dimension.IsMultiSelect ? MultiTagColor : SingleTagColor); chip.Margin = new Padding(0, S(3), 0, S(3)); chip.MaximumSize = new Size(headlineContentWidth, 0); tagChips.Add(chip);
+                singleChips.Add(DetailTagChip($"{dimension.Name} : {value}", SingleTagColor));
+                continue;
             }
+            var values = (game.MultiTags.ElementAtOrDefault(index) ?? [])
+                .Select(id => dimension.Values.GetValueOrDefault(id) ?? "")
+                .Where(value => !string.IsNullOrWhiteSpace(value)).ToList();
+            if (values.Count > 0) tagRows.Add(BuildMultiTagRow(dimension.Name, values, headlineContentWidth));
         }
-        var tagHeight = Math.Max(S(38), tagChips.Sum(chip => chip.PreferredSize.Height + chip.Margin.Vertical));
+        if (singleChips.Count > 0) tagRows.Insert(0, BuildGreedyTagRow(singleChips, headlineContentWidth));
+        var tagHeight = Math.Max(S(38), tagRows.Sum(row => row.Height + S(6)));
         var contentFirstHeight = S(104) + titleMeasure.Height + S(16) + tagHeight;
         // A portrait cover should never collapse below this presentation size on
         // a normally sized window. On narrow windows it remains bounded by its
@@ -1063,7 +1070,7 @@ public sealed class MainForm : Form
         headline.Controls.Add(numberAndLaunch, 0, 0);
         headline.Controls.Add(new Label { Text = displayTitle, AutoSize = true, MaximumSize = new Size(headlineContentWidth, 0), Font = titleFont, ForeColor = Color.White, Margin = new Padding(0, S(8), 0, S(8)) }, 0, 1);
         var tags = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = false, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = Padding.Empty, BackColor = page.BackColor };
-        foreach (var chip in tagChips) tags.Controls.Add(chip);
+        foreach (var row in tagRows) { row.Margin = new Padding(0, 0, 0, S(6)); tags.Controls.Add(row); }
         headline.Controls.Add(tags, 0, 2); first.Controls.Add(headline, 1, 0);
 
         // Section 2: an equal 2A/2B split, with the two lamps horizontally sharing 2B.
@@ -1091,6 +1098,44 @@ public sealed class MainForm : Form
         page.RowStyles.Add(new RowStyle(SizeType.Absolute, firstHeight)); page.RowStyles.Add(new RowStyle(SizeType.Absolute, secondHeight + S(36))); page.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         page.Controls.Add(first, 0, 0); page.Controls.Add(second, 0, 1); page.Controls.Add(metadata, 0, 2); page.PerformLayout();
         page.Height = firstHeight + secondHeight + metadata.PreferredSize.Height + S(84); holder.Height = page.Height; holder.Controls.Add(page); _content.Controls.Add(holder); EnableWheelScroll(page);
+    }
+    private Label DetailTagChip(string text, Color color)
+    {
+        var chip = FilterChip(text, color);
+        chip.Margin = Padding.Empty;
+        chip.AutoSize = false;
+        var size = TextRenderer.MeasureText(text, chip.Font);
+        chip.Width = size.Width + S(18);
+        chip.Height = Math.Max(S(34), size.Height + S(10));
+        return chip;
+    }
+    private Panel BuildGreedyTagRow(IEnumerable<Label> chips, int width)
+    {
+        var row = new Panel { Width = width, BackColor = Color.Transparent };
+        var x = 0; var y = 0; var lineHeight = 0;
+        foreach (var chip in chips)
+        {
+            if (x > 0 && x + chip.Width > width) { y += lineHeight + S(6); x = 0; lineHeight = 0; }
+            chip.Location = new Point(x, y); row.Controls.Add(chip); x += chip.Width + S(6); lineHeight = Math.Max(lineHeight, chip.Height);
+        }
+        row.Height = Math.Max(S(34), y + lineHeight);
+        return row;
+    }
+    private Panel BuildMultiTagRow(string dimensionName, IEnumerable<string> values, int width)
+    {
+        var row = new Panel { Width = width, BackColor = Color.Transparent };
+        var description = DetailTagChip(dimensionName + " :", MultiTagColor);
+        description.Location = Point.Empty; row.Controls.Add(description);
+        var indent = Math.Min(width - S(24), description.Width + S(8));
+        var x = indent; var y = 0; var lineHeight = description.Height;
+        foreach (var value in values)
+        {
+            var chip = DetailTagChip(value, MultiTagColor);
+            if (x > indent && x + chip.Width > width) { y += lineHeight + S(6); x = indent; lineHeight = 0; }
+            chip.Location = new Point(x, y); row.Controls.Add(chip); x += chip.Width + S(6); lineHeight = Math.Max(lineHeight, chip.Height);
+        }
+        row.Height = Math.Max(description.Height, y + lineHeight);
+        return row;
     }
     private void HandlePlayStatusClick(GameEntry game, MouseEventArgs e)
     {
