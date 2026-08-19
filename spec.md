@@ -1,7 +1,7 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.1.0a (alpha)
-**Savedata format:** v3
+**Current application specification:** 2.1.0a1 (alpha)
+**Savedata format:** v4
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
 ## 1. Product boundary and platform
@@ -59,7 +59,7 @@ The user-owned `savedata/` directory is never included in source-control or rele
 
 ## 4. Persistent data contract
 
-`savedata/gameshelf.json` serializes `AppData`. Its current `Version` is `3`.
+`savedata/gameshelf.json` serializes `AppData`. Its current `Version` is `4`.
 
 | Area | Stored data |
 | --- | --- |
@@ -118,7 +118,7 @@ The last page is persisted only for Library and game detail. If the launcher is 
 
 Library shows responsive game cards. In normal mode, only a left click opens a game detail page. In game-management mode, right-clicking a card performs the management context action, including deletion; cards do not open games in that mode.
 
-Each card has a fixed portrait 3:4 cover at upper-left. Its two status lamps stack vertically to the cover's right and together match the cover height. The decimal game number is below the cover, followed by a title that supports two lines and renders a literal `\\n` as a line break. Single-select chips sit under the title and multi-select chips sit below those. The Library may show up to three selected single-select dimensions and one selected multi-select dimension; every multi value uses its own orange chip, while single chips use purple. Filtering always considers every dimension.
+Each card has a fixed portrait 3:4 cover at upper-left, enlarged by 1.2× from the prior card layout. Its two status lamps stack vertically to the cover's right and together match the cover height. The decimal game number is below the cover, followed by a title that supports two lines and renders a literal `\\n` as a line break. The compact single-select strip sits under the title; the larger multi-select strip sits below it. The Library may show up to three selected single-select dimensions and two selected multi-select dimensions; every multi value uses its own orange chip, while single chips use purple. Filtering always considers every dimension.
 
 The title search field sits directly left of the rightmost filter control and combines with every other condition using AND; its adjacent clear button removes the search text. The filter control opens a modal filter:
 
@@ -130,7 +130,7 @@ The title search field sits directly left of the rightmost filter control and co
 - Clear removes all conditions.
 - After applying, active selection chips appear immediately to the left of the filter control, right-aligned and wrapping when necessary.
 
-In Library management, the dimension selector chooses up to three displayed single-select dimensions plus one displayed multi-select dimension. Its choice tiles measure to the dimension text rather than using fixed-size controls.
+In Library management, the dimension selector chooses up to three displayed single-select dimensions plus two displayed multi-select dimensions. Its choice tiles measure to the dimension text rather than using fixed-size controls.
 
 ## 8. Game detail page
 
@@ -158,7 +158,7 @@ The play-status lamp accepts a double click within 0.8 seconds to move to the ne
 
 First-level edit changes one game. It provides boxed interactive text controls for title, note, paths and selectable properties. Image and save/game path selection controls are placed below the normal properties in the scrollable page. Choosing a cover opens a crop/zoom surface before the managed image is saved.
 
-The selected save root, region-command alias and tag values are shown as mapped text; persisted IDs remain internal. A multi-select tag uses orange mutually-aware checkbox tiles: at least one value is required, and `none` cannot coexist with another value. Play status is not set here because it is changed from the detail lamp. Game status is also absent: it is path-derived and can only be cycled from the detail lamp while unavailable.
+The selected save root, region-command alias and tag values are shown as mapped text; persisted IDs remain internal. Every multi-select dimension has its own clearly labelled `(<name> multi-select)` first-level selection row, using orange mutually-aware checkbox tiles: at least one value is required, and `none` cannot coexist with another value. Play status is not set here because it is changed from the detail lamp. Game status is also absent: it is path-derived and can only be cycled from the detail lamp while unavailable.
 
 ### 9.2 Second-level global management
 
@@ -169,7 +169,7 @@ Global management owns:
 - region commands (full command plus required short alias);
 - play and game statuses, including RGB/hex colour and vector artwork;
 - play-status ordering through adjacent two-way swaps;
-- single-select and multi-select tag dimensions and mapped values;
+- a labelled single-select/multi-select dimension management area, including mapped values and a right-click type conversion action;
 - the Library-card display-dimension selection; and
 - all logical action-button icons.
 

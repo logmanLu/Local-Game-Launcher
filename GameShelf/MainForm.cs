@@ -665,7 +665,7 @@ public sealed class MainForm : Form
     {
         using var popup = new Form { Text = "Library card dimensions", StartPosition = FormStartPosition.CenterParent, Size = new Size(S(650), S(520)), MinimumSize = new Size(520, 420), BackColor = Color.FromArgb(35, 38, 39), ForeColor = Color.White, Font = Font };
         var selected = _store.Data.Settings.HomeDisplayDimensionIds.ToHashSet();
-        var selectedMulti = _store.Data.Settings.HomeMultiDisplayDimensionId;
+        var selectedMulti = _store.Data.Settings.HomeMultiDisplayDimensionIds.ToHashSet();
         var message = new Label { Dock = DockStyle.Top, Height = S(80), Padding = new Padding(S(18), S(12), S(18), 0), Text = "Choose up to three single-select dimensions and one multi-select dimension to show on Library cards.", ForeColor = Color.FromArgb(244, 204, 89), Font = new Font(Font.FontFamily, S(15), FontStyle.Bold) };
         var list = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(S(18)), BackColor = popup.BackColor };
         list.Controls.Add(new Label { Text = "Single-select dimensions", Width = S(560), Height = S(34), ForeColor = Color.FromArgb(190, 151, 235), Font = new Font(Font.FontFamily, S(15), FontStyle.Bold) });
@@ -676,14 +676,13 @@ public sealed class MainForm : Form
             item.FlatAppearance.CheckedBackColor = Color.FromArgb(104, 76, 151); item.CheckedChanged += (_, _) => { if (item.Checked && !selected.Contains(id) && selected.Count >= 3) { item.Checked = false; return; } if (item.Checked) selected.Add(id); else selected.Remove(id); };
             list.Controls.Add(item);
         }
-        list.Controls.Add(new Label { Text = "Multi-select dimension", Width = S(560), Height = S(34), Margin = new Padding(S(6), S(20), S(6), S(6)), ForeColor = MultiTagColor, Font = new Font(Font.FontFamily, S(15), FontStyle.Bold) });
-        var multiGroup = new List<(int id, CheckBox tile)>();
+        list.Controls.Add(new Label { Text = "Choose up to two multi-select dimensions", Width = S(560), Height = S(34), Margin = new Padding(S(6), S(20), S(6), S(6)), ForeColor = MultiTagColor, Font = new Font(Font.FontFamily, S(15), FontStyle.Bold) });
         foreach (var dimension in _store.Data.TagSchema.Where(dimension => dimension.IsMultiSelect))
         {
             var id = dimension.DimensionId; var itemFont = new Font(Font.FontFamily, S(14), FontStyle.Bold); var measured = TextRenderer.MeasureText(dimension.Name, itemFont);
-            var item = new CheckBox { Text = dimension.Name, Appearance = Appearance.Button, Checked = selectedMulti == id, AutoSize = false, Width = measured.Width + S(30), Height = Math.Max(S(46), measured.Height + S(18)), TextAlign = ContentAlignment.MiddleCenter, Margin = new Padding(S(6)), FlatStyle = FlatStyle.Flat, ForeColor = Color.White, BackColor = Color.FromArgb(72, 83, 93), Font = itemFont };
-            item.FlatAppearance.CheckedBackColor = MultiTagColor; item.CheckedChanged += (_, _) => { if (!item.Checked) { if (selectedMulti == id) selectedMulti = null; return; } selectedMulti = id; foreach (var other in multiGroup.Where(other => other.id != id)) other.tile.Checked = false; };
-            multiGroup.Add((id, item)); list.Controls.Add(item);
+            var item = new CheckBox { Text = dimension.Name, Appearance = Appearance.Button, Checked = selectedMulti.Contains(id), AutoSize = false, Width = measured.Width + S(30), Height = Math.Max(S(46), measured.Height + S(18)), TextAlign = ContentAlignment.MiddleCenter, Margin = new Padding(S(6)), FlatStyle = FlatStyle.Flat, ForeColor = Color.White, BackColor = Color.FromArgb(72, 83, 93), Font = itemFont };
+            item.FlatAppearance.CheckedBackColor = MultiTagColor; item.CheckedChanged += (_, _) => { if (item.Checked && !selectedMulti.Contains(id) && selectedMulti.Count >= 2) { item.Checked = false; return; } if (item.Checked) selectedMulti.Add(id); else selectedMulti.Remove(id); };
+            list.Controls.Add(item);
         }
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = S(92), FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(S(12), S(8), S(12), S(8)), BackColor = popup.BackColor };
         var save = CreateIconButton("✓", "Save library card dimensions", (_, _) => { _store.SetHomeDisplayDimensions(selected, selectedMulti); popup.DialogResult = DialogResult.OK; }); buttons.Controls.Add(save);
@@ -829,22 +828,22 @@ public sealed class MainForm : Form
     {
         var cardWidth = S(390); var cardHeight = S(510); var baseColor = Color.FromArgb(38, 42, 42);
         var card = new Panel { Width = cardWidth, Height = cardHeight, Margin = new Padding(S(16)), BorderStyle = BorderStyle.FixedSingle, AccessibleName = game.Title, BackColor = baseColor };
-        var imageHeight = S(219); var imageWidth = imageHeight * 3 / 4; var rightLeft = S(9) + imageWidth + S(10); var rightWidth = cardWidth - rightLeft - S(9);
+        var imageHeight = S(263); var imageWidth = imageHeight * 3 / 4; var rightLeft = S(9) + imageWidth + S(10); var rightWidth = cardWidth - rightLeft - S(9);
         var image = new PictureBox { Left = S(9), Top = S(9), Width = imageWidth, Height = imageHeight, SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), Cursor = _management ? Cursors.Default : Cursors.Hand };
         var statusGap = S(7); var statusHeight = (imageHeight - statusGap) / 2;
         var playStatus = StatusBlock(StatusKind.Play, game.PlayStatusId, new Rectangle(rightLeft, S(9), rightWidth, statusHeight));
         var gameStatus = StatusBlock(StatusKind.Game, game.GameStatusId, new Rectangle(rightLeft, S(9) + statusHeight + statusGap, rightWidth, statusHeight));
-        var id = new Label { Text = game.Id.ToString(), Left = S(12), Top = S(236), Width = cardWidth - S(24), Height = S(38), Font = new Font(Font.FontFamily, S(24), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
-        var title = new Label { Text = DisplayTitle(game.Title), Left = S(12), Top = S(276), Width = cardWidth - S(24), Height = S(74), AutoEllipsis = true, Font = new Font(Font.FontFamily, S(21), FontStyle.Bold), ForeColor = Color.White };
-        var singleTags = new FlowLayoutPanel { Left = S(9), Top = S(354), Width = cardWidth - S(18), Height = S(66), AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
+        var id = new Label { Text = game.Id.ToString(), Left = S(12), Top = S(278), Width = cardWidth - S(24), Height = S(30), Font = new Font(Font.FontFamily, S(22), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
+        var title = new Label { Text = DisplayTitle(game.Title), Left = S(12), Top = S(310), Width = cardWidth - S(24), Height = S(60), AutoEllipsis = true, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = Color.White };
+        var singleTags = new FlowLayoutPanel { Left = S(9), Top = S(374), Width = cardWidth - S(18), Height = S(42), AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
         foreach (var dimension in HomeDisplayDimensions())
         {
             var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == dimension.DimensionId);
             var text = index >= 0 ? dimension.Values.GetValueOrDefault(game.Tags.ElementAtOrDefault(index)) ?? string.Empty : string.Empty;
             if (!string.IsNullOrWhiteSpace(text)) singleTags.Controls.Add(FilterChip(text, SingleTagColor));
         }
-        var multiTags = new FlowLayoutPanel { Left = S(9), Top = S(426), Width = cardWidth - S(18), Height = S(75), AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
-        if (HomeMultiDisplayDimension() is { } multiDimension)
+        var multiTags = new FlowLayoutPanel { Left = S(9), Top = S(420), Width = cardWidth - S(18), Height = S(81), AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
+        foreach (var multiDimension in HomeMultiDisplayDimensions())
         {
             var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == multiDimension.DimensionId);
             foreach (var value in game.MultiTags.ElementAtOrDefault(index) ?? [])
@@ -874,9 +873,9 @@ public sealed class MainForm : Form
     private IEnumerable<TagDimension> HomeDisplayDimensions() => _store.Data.Settings.HomeDisplayDimensionIds
         .Select(id => _store.Data.TagSchema.FirstOrDefault(dimension => dimension.DimensionId == id))
         .Where(dimension => dimension is { IsMultiSelect: false }).Cast<TagDimension>();
-    private TagDimension? HomeMultiDisplayDimension() => _store.Data.Settings.HomeMultiDisplayDimensionId is int id
-        ? _store.Data.TagSchema.FirstOrDefault(dimension => dimension.IsMultiSelect && dimension.DimensionId == id)
-        : null;
+    private IEnumerable<TagDimension> HomeMultiDisplayDimensions() => _store.Data.Settings.HomeMultiDisplayDimensionIds
+        .Select(id => _store.Data.TagSchema.FirstOrDefault(dimension => dimension.IsMultiSelect && dimension.DimensionId == id))
+        .Where(dimension => dimension is not null).Cast<TagDimension>();
     private static string DisplayTitle(string title) => (title ?? "").Replace("\\n", "\n");
     private Image LoadImage(GameEntry g)
     {
@@ -1171,8 +1170,7 @@ public sealed class MainForm : Form
         form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, S(190))); form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, S(105)));
         void Row(string title, Control field, Action reset)
         {
-            var row = form.RowCount++; var tall = field is TextBox { Multiline: true }; var panelField = field is FlowLayoutPanel; var tagField = _store.Data.TagSchema.Any(d => d.Name == title); form.RowStyles.Add(new RowStyle(SizeType.Absolute, tall ? 190 : panelField ? 140 : 132));
-            var dimension = _store.Data.TagSchema.FirstOrDefault(d => d.Name == title);
+            var row = form.RowCount++; var tall = field is TextBox { Multiline: true }; var panelField = field is FlowLayoutPanel; var dimension = _store.Data.TagSchema.FirstOrDefault(d => title == d.Name || title == $"{d.Name} (multi-select)"); var tagField = dimension is not null; form.RowStyles.Add(new RowStyle(SizeType.Absolute, tall ? 190 : panelField ? 140 : 132));
             var label = new Label { Text = title, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = tagField ? (dimension?.IsMultiSelect == true ? MultiTagColor : Color.FromArgb(190, 151, 235)) : Color.FromArgb(244, 204, 89) };
             field.Width = 670; field.Anchor = AnchorStyles.Left | AnchorStyles.Right; field.Margin = new Padding(0, tall ? 20 : panelField ? 12 : 26, 12, tall ? 20 : panelField ? 12 : 26); field.Font = new Font(Font.FontFamily, 15, FontStyle.Bold);
             if (field is TextBox input) { input.BackColor = IsDarkTheme ? Color.FromArgb(22, 24, 25) : Color.White; input.ForeColor = IsDarkTheme ? Color.FromArgb(181, 228, 245) : Color.FromArgb(48, 110, 132); }
@@ -1197,7 +1195,7 @@ public sealed class MainForm : Form
             if (dim.IsMultiSelect)
             {
                 var picker = MultiTagPicker(dim, draft.MultiTags.ElementAtOrDefault(pos) ?? [0]); multiTagPickers[pos] = picker;
-                Row(dim.Name, picker, () => SetMultiTagPicker(picker, [0]));
+                Row($"{dim.Name} (multi-select)", picker, () => SetMultiTagPicker(picker, [0]));
             }
             else
             {
@@ -1529,10 +1527,11 @@ public sealed class MainForm : Form
     }
     private Control TagVectorSection()
     {
-        var sectionHeight = S(95) + (_store.Data.TagSchema.Count + 1) * S(154);
+        var sectionHeight = S(132) + (_store.Data.TagSchema.Count + 1) * S(154);
         var section = new Panel { Width = Math.Max(860, _content.ClientSize.Width - 100), Height = sectionHeight, Margin = new Padding(0, 0, 0, S(32)), BackColor = Color.FromArgb(35, 38, 39) };
-        section.Controls.Add(new Label { Text = _t["Dimensions"], Left = S(22), Top = S(16), Width = section.Width - S(44), Height = S(40), Font = new Font(Font.FontFamily, S(21), FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black });
-        var rows = new FlowLayoutPanel { Left = S(22), Top = S(75), Width = section.Width - S(44), Height = section.Height - S(83), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = false, Padding = new Padding(S(8)), BackColor = section.BackColor };
+        section.Controls.Add(new Label { Text = _t["Dimensions"] + " (single / multi-select)", Left = S(22), Top = S(16), Width = section.Width - S(44), Height = S(40), Font = new Font(Font.FontFamily, S(21), FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black });
+        section.Controls.Add(new Label { Text = "Right-click a dimension to rename, change its selection type, or delete it. Left-click a value to edit it.", Left = S(24), Top = S(58), Width = section.Width - S(48), Height = S(28), Font = new Font(Font.FontFamily, S(12), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) });
+        var rows = new FlowLayoutPanel { Left = S(22), Top = S(105), Width = section.Width - S(44), Height = section.Height - S(113), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = false, Padding = new Padding(S(8)), BackColor = section.BackColor };
         foreach (var dimension in _store.Data.TagSchema)
         {
             var row = new FlowLayoutPanel { Width = rows.Width - S(36), Height = S(154), WrapContents = false, AutoScroll = true, Padding = new Padding(0, 0, 0, S(6)) };

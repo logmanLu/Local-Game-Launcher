@@ -71,6 +71,7 @@ public sealed class DataStore : IDisposable
         var sourceVersion = Data.Version;
         // v1 -> v2: permanent dark UI removes the obsolete Theme field.
         // v2 -> v3: multi-select dimension collections are normalized below.
+        // v3 -> v4: Library supports two multi-select display dimensions.
         // Future fields remain in JsonExtensionData and are round-tripped.
         Data.Settings ??= new AppSettings();
         Data.Settings.UnknownFields?.Remove("Theme");
@@ -422,11 +423,15 @@ public sealed class DataStore : IDisposable
         Save();
     }
 
-    public void SetHomeDisplayDimensions(IEnumerable<int> dimensionIds, int? multiDimensionId)
+    public void SetHomeDisplayDimensions(IEnumerable<int> dimensionIds, IEnumerable<int> multiDimensionIds)
     {
         var single = new HashSet<int>(Data.TagSchema.Where(dimension => !dimension.IsMultiSelect).Select(dimension => dimension.DimensionId));
+        var multi = new HashSet<int>(Data.TagSchema.Where(dimension => dimension.IsMultiSelect).Select(dimension => dimension.DimensionId));
         Data.Settings.HomeDisplayDimensionIds = dimensionIds.Where(single.Contains).Distinct().Take(3).ToList();
-        Data.Settings.HomeMultiDisplayDimensionId = Data.TagSchema.Any(dimension => dimension.IsMultiSelect && dimension.DimensionId == multiDimensionId) ? multiDimensionId : null;
+        Data.Settings.HomeMultiDisplayDimensionIds = multiDimensionIds.Where(multi.Contains).Distinct().Take(2).ToList();
+        // Preserve the compatible v3 scalar so a v3 launcher can still show the
+        // first selected multi dimension if the data is opened accidentally.
+        Data.Settings.HomeMultiDisplayDimensionId = Data.Settings.HomeMultiDisplayDimensionIds.Count > 0 ? Data.Settings.HomeMultiDisplayDimensionIds[0] : null;
         Normalize(); Save();
     }
 
@@ -460,6 +465,7 @@ public sealed class DataStore : IDisposable
         Data.Settings.SelectedTagFilters ??= [];
         Data.Settings.TitleSearch ??= "";
         Data.Settings.HomeDisplayDimensionIds ??= [];
+        Data.Settings.HomeMultiDisplayDimensionIds ??= [];
         Data.Settings.ButtonIcons ??= [];
         Data.Settings.RunningGameProcesses ??= [];
         var dimensionsById = Data.TagSchema.ToDictionary(d => d.DimensionId);
@@ -477,8 +483,11 @@ public sealed class DataStore : IDisposable
             if (Data.Settings.HomeDisplayDimensionIds.Count >= 3) break;
             if (!Data.Settings.HomeDisplayDimensionIds.Contains(dimension.DimensionId)) Data.Settings.HomeDisplayDimensionIds.Add(dimension.DimensionId);
         }
-        if (Data.Settings.HomeMultiDisplayDimensionId is not int selectedMulti || !dimensionsById.TryGetValue(selectedMulti, out var multiDimension) || !multiDimension.IsMultiSelect)
-            Data.Settings.HomeMultiDisplayDimensionId = null;
+        if (Data.Settings.HomeMultiDisplayDimensionIds.Count == 0 && Data.Settings.HomeMultiDisplayDimensionId is int legacyMulti)
+            Data.Settings.HomeMultiDisplayDimensionIds.Add(legacyMulti);
+        Data.Settings.HomeMultiDisplayDimensionIds = Data.Settings.HomeMultiDisplayDimensionIds
+            .Where(id => dimensionsById.TryGetValue(id, out var multiDimension) && multiDimension.IsMultiSelect).Distinct().Take(2).ToList();
+        Data.Settings.HomeMultiDisplayDimensionId = Data.Settings.HomeMultiDisplayDimensionIds.Count > 0 ? Data.Settings.HomeMultiDisplayDimensionIds[0] : null;
         Data.Games ??= [];
         if (string.IsNullOrWhiteSpace(Data.RcRootPath))
         {
