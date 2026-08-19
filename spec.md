@@ -1,6 +1,6 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.1.0a1 (alpha)
+**Current application specification:** 2.1.0a2 (alpha)
 **Savedata format:** v4
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
@@ -173,7 +173,7 @@ Global management owns:
 - the Library-card display-dimension selection; and
 - all logical action-button icons.
 
-Property collections are tiles rather than a fixed list: simple properties use one tile per value plus an Add tile; tag dimensions are scrollable rows with an Add-value tile at the row end and an Add-dimension tile at the column end. A dimension's context menu can change it between single-select and multi-select while preserving a compatible game value. Left click edits a value. Right click opens only the edit/delete context menu (it must not also open the edit dialog). Every edit/delete context menu uses the enlarged dark GameShelf menu renderer rather than the default light menu appearance. Management sections shrink to their content height instead of claiming an entire viewport.
+Property collections are tiles rather than a fixed list: simple properties use one tile per value plus an Add tile; tag dimensions are scrollable rows with an Add-value tile at the row end and an Add-dimension tile at the column end. A dimension's context menu can change it between single-select and multi-select while preserving a compatible game value. Left click edits a value. Right click opens only the edit/delete context menu (it must not also open the edit dialog). Every edit/delete context menu uses the enlarged dark GameShelf menu renderer, with an explicit menu width sized for complete labels, rather than the default light menu appearance. Management sections shrink to their content height instead of claiming an entire viewport. A management-page refresh caused by any add, edit, delete, reorder, reset or type-change preserves its current vertical scroll position.
 
 The vector icon editor previews existing custom artwork or the logical built-in glyph when no custom vector is saved. It supports freehand line, straight line, hollow circle, hollow triangle, hollow rectangle, and Paint-style flood fill of an enclosed region. New geometry can be adjusted immediately after creation. Vectors render as white marks over the selected coloured background.
 

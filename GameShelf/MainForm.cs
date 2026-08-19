@@ -1314,8 +1314,9 @@ public sealed class MainForm : Form
     }
     private static Color StatusColorValue(string value) { try { return ColorTranslator.FromHtml(value); } catch { return Color.Gray; } }
 
-    private void ShowGlobal()
+    private void ShowGlobal(bool preserveScroll = false)
     {
+        var scrollY = preserveScroll && _page == "global" ? _content.VerticalScroll.Value : 0;
         _page = "global"; BuildTop(false); Clear();
         var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Width = Math.Max(900, _content.ClientSize.Width - 80), Padding = new Padding(S(8)) };
         stack.Controls.Add(RcRootSection());
@@ -1326,6 +1327,11 @@ public sealed class MainForm : Form
         stack.Controls.Add(ButtonIconSection());
         stack.Controls.Add(TagVectorSection());
         _content.Controls.Add(stack); EnableWheelScroll(stack);
+        if (scrollY > 0 && IsHandleCreated)
+            BeginInvoke((Action)(() =>
+            {
+                if (!IsDisposed && _page == "global") _content.AutoScrollPosition = new Point(0, scrollY);
+            }));
     }
     private Control RcRootSection()
     {
@@ -1341,14 +1347,14 @@ public sealed class MainForm : Form
     {
         using var dialog = new FolderBrowserDialog { Description = "Choose the shared rc game-resource folder" };
         if (dialog.ShowDialog() != DialogResult.OK) return;
-        try { _store.SetRcRootPath(dialog.SelectedPath); ShowGlobal(); }
+        try { _store.SetRcRootPath(dialog.SelectedPath); ShowGlobal(true); }
         catch (Exception ex) { MessageBox.Show(ex.Message); }
     }
     private void AddSaveRootTile()
     {
         var name = Prompt("Save root name"); if (name is null) return;
         var path = Prompt("Save root path (. or environment-variable Windows path)", "%USERPROFILE%\\Documents"); if (path is null) return;
-        try { _store.AddSaveRoot(name, path); ShowGlobal(); }
+        try { _store.AddSaveRoot(name, path); ShowGlobal(true); }
         catch (Exception ex) { MessageBox.Show(ex.Message); }
     }
     private ContextMenuStrip? SaveRootContext(int id)
@@ -1359,11 +1365,11 @@ public sealed class MainForm : Form
         {
             var name = Prompt("Save root name", root.Name); if (name is null) return;
             var path = Prompt("Save root path (. or environment-variable Windows path)", root.PathTemplate); if (path is null) return;
-            try { _store.UpdateSaveRoot(id, name, path); ShowGlobal(); }
+            try { _store.UpdateSaveRoot(id, name, path); ShowGlobal(true); }
             catch (Exception ex) { MessageBox.Show(ex.Message); }
         });
         if (_store.Data.SaveRoots.Count > 1)
-            menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) { try { _store.DeleteSaveRoot(id); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } } });
+            menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) { try { _store.DeleteSaveRoot(id); ShowGlobal(true); } catch (Exception ex) { MessageBox.Show(ex.Message); } } });
         return menu;
     }
     private Control ArraySection(string title, IEnumerable<(int id, string text)> items, string addGlyph, Action add, Func<int, ContextMenuStrip?> menu)
@@ -1384,7 +1390,7 @@ public sealed class MainForm : Form
     ];
     private Control ButtonIconSection()
     {
-        return ArraySection("Button icons", ButtonIconCatalog.Select((item, index) => (index, item.Name)), "↻", () => { _store.Data.Settings.ButtonIcons.Clear(); _store.Save(); ShowGlobal(); }, ButtonIconContext);
+        return ArraySection("Button icons", ButtonIconCatalog.Select((item, index) => (index, item.Name)), "↻", () => { _store.Data.Settings.ButtonIcons.Clear(); _store.Save(); ShowGlobal(true); }, ButtonIconContext);
     }
     private ContextMenuStrip? ButtonIconContext(int index)
     {
@@ -1397,9 +1403,9 @@ public sealed class MainForm : Form
             // still shows the original button icon as a visual reference.
             var fallbackGlyph = string.IsNullOrWhiteSpace(item.Glyph) ? "▼" : item.Glyph;
             var vector = EditStatusIcon(current ?? "", ColorTranslator.ToHtml(ButtonColor(item.Glyph)), fallbackGlyph); if (vector is null) return;
-            _store.Data.Settings.ButtonIcons[item.Key] = vector; _store.Save(); ShowGlobal();
+            _store.Data.Settings.ButtonIcons[item.Key] = vector; _store.Save(); ShowGlobal(true);
         });
-        if (_store.Data.Settings.ButtonIcons.ContainsKey(item.Key)) menu.Items.Add("Restore glyph", null, (_, _) => { _store.Data.Settings.ButtonIcons.Remove(item.Key); _store.Save(); ShowGlobal(); });
+        if (_store.Data.Settings.ButtonIcons.ContainsKey(item.Key)) menu.Items.Add("Restore glyph", null, (_, _) => { _store.Data.Settings.ButtonIcons.Remove(item.Key); _store.Save(); ShowGlobal(true); });
         return menu;
     }
     private sealed class DarkContextColorTable : ProfessionalColorTable
@@ -1419,6 +1425,8 @@ public sealed class MainForm : Form
     {
         var menu = new ContextMenuStrip
         {
+            AutoSize = false,
+            Width = Math.Max(S(300), 250),
             ShowImageMargin = false,
             ShowCheckMargin = false,
             BackColor = Color.FromArgb(25, 27, 28),
@@ -1431,6 +1439,7 @@ public sealed class MainForm : Form
         {
             if (args.Item is null) return;
             args.Item.AutoSize = false;
+            args.Item.Width = menu.Width - S(12);
             args.Item.Height = S(52);
             args.Item.Padding = new Padding(S(18), S(6), S(18), S(6));
             args.Item.ForeColor = Color.White;
@@ -1457,12 +1466,12 @@ public sealed class MainForm : Form
     {
         var alias = Prompt("Region command alias"); if (alias is null) return;
         var command = Prompt("Region command", ""); if (command is null) return;
-        try { _store.AddRegionCommand(alias, command); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); }
+        try { _store.AddRegionCommand(alias, command); ShowGlobal(true); } catch (Exception ex) { MessageBox.Show(ex.Message); }
     }
     private ContextMenuStrip? RegionContext(int id)
     {
-        var menu = CreateDarkContextMenu(); menu.Items.Add("Edit", null, (_, _) => { var alias = Prompt("Region command alias", RegionAlias(id)); if (alias is null) return; var command = Prompt("Region command", _store.Data.RegionCommands[id]); if (command is not null) { try { _store.UpdateRegionCommand(id, alias, command); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } } });
-        menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) == DialogResult.Yes) { _store.DeleteRegionCommand(id); ShowGlobal(); } }); return menu;
+        var menu = CreateDarkContextMenu(); menu.Items.Add("Edit", null, (_, _) => { var alias = Prompt("Region command alias", RegionAlias(id)); if (alias is null) return; var command = Prompt("Region command", _store.Data.RegionCommands[id]); if (command is not null) { try { _store.UpdateRegionCommand(id, alias, command); ShowGlobal(true); } catch (Exception ex) { MessageBox.Show(ex.Message); } } });
+        menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) == DialogResult.Yes) { _store.DeleteRegionCommand(id); ShowGlobal(true); } }); return menu;
     }
     private static bool TryParseRgb(string value, out string hex)
     {
@@ -1509,20 +1518,20 @@ public sealed class MainForm : Form
     {
         var name = Prompt("Status name"); if (name is null) return; var color = PromptRgb("#808080"); if (color is null) return;
         var icon = EditStatusIcon(StatusIconVectors.DefaultFor(kind), color); if (icon is null) return;
-        try { _store.AddStatus(kind, name, color, icon); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); }
+        try { _store.AddStatus(kind, name, color, icon); ShowGlobal(true); } catch (Exception ex) { MessageBox.Show(ex.Message); }
     }
     private ContextMenuStrip? StatusContext(StatusKind kind, int id)
     {
         var item = (kind == StatusKind.Play ? _store.Data.PlayStatuses : _store.Data.GameStatuses).Single(x => x.Id == id);
         var systemGameStatus = kind == StatusKind.Game && !string.IsNullOrWhiteSpace(item.SystemRole);
-        var menu = CreateDarkContextMenu(); menu.Items.Add("Edit", null, (_, _) => { var name = Prompt("Status name", item.Name); if (name is null) return; var color = systemGameStatus ? item.Color : PromptRgb(item.Color); if (color is null) return; var icon = EditStatusIcon(item.IconVector, color); if (icon is null) return; try { _store.UpdateStatus(kind, id, name, color, icon); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } });
+        var menu = CreateDarkContextMenu(); menu.Items.Add("Edit", null, (_, _) => { var name = Prompt("Status name", item.Name); if (name is null) return; var color = systemGameStatus ? item.Color : PromptRgb(item.Color); if (color is null) return; var icon = EditStatusIcon(item.IconVector, color); if (icon is null) return; try { _store.UpdateStatus(kind, id, name, color, icon); ShowGlobal(true); } catch (Exception ex) { MessageBox.Show(ex.Message); } });
         if (kind == StatusKind.Play)
         {
             var index = _store.Data.PlayStatuses.FindIndex(status => status.Id == id);
-            if (index > 0) menu.Items.Add("Move earlier", null, (_, _) => { _store.MovePlayStatus(id, -1); ShowGlobal(); });
-            if (index < _store.Data.PlayStatuses.Count - 1) menu.Items.Add("Move later", null, (_, _) => { _store.MovePlayStatus(id, 1); ShowGlobal(); });
+            if (index > 0) menu.Items.Add("Move earlier", null, (_, _) => { _store.MovePlayStatus(id, -1); ShowGlobal(true); });
+            if (index < _store.Data.PlayStatuses.Count - 1) menu.Items.Add("Move later", null, (_, _) => { _store.MovePlayStatus(id, 1); ShowGlobal(true); });
         }
-        if (!systemGameStatus && (kind == StatusKind.Play ? _store.Data.PlayStatuses : _store.Data.GameStatuses).Count > 1) menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) == DialogResult.Yes) { try { _store.DeleteStatus(kind, id); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } } });
+        if (!systemGameStatus && (kind == StatusKind.Play ? _store.Data.PlayStatuses : _store.Data.GameStatuses).Count > 1) menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) == DialogResult.Yes) { try { _store.DeleteStatus(kind, id); ShowGlobal(true); } catch (Exception ex) { MessageBox.Show(ex.Message); } } });
         return menu;
     }
     private Control TagVectorSection()
@@ -1547,27 +1556,27 @@ public sealed class MainForm : Form
         var type = Prompt("Dimension type: single or multi", "single"); if (type is null) return;
         var multi = type.Trim().Equals("multi", StringComparison.OrdinalIgnoreCase);
         if (!multi && !type.Trim().Equals("single", StringComparison.OrdinalIgnoreCase)) { MessageBox.Show("Dimension type must be single or multi."); return; }
-        try { _store.AddDimension(name, multi); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); }
+        try { _store.AddDimension(name, multi); ShowGlobal(true); } catch (Exception ex) { MessageBox.Show(ex.Message); }
     }
-    private void AddValueTile(int dimensionId) { var name = Prompt("Value display text"); if (name is not null) { try { _store.AddTagValue(dimensionId, name); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }
+    private void AddValueTile(int dimensionId) { var name = Prompt("Value display text"); if (name is not null) { try { _store.AddTagValue(dimensionId, name); ShowGlobal(true); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }
     private void EditTagValue(int dimensionId, int value)
     {
         var dimension = _store.Data.TagSchema.Single(x => x.DimensionId == dimensionId); var text = Prompt("Value display text", dimension.Values[value]);
-        if (text is not null) { try { _store.SetTagValue(dimensionId, value, text); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
+        if (text is not null) { try { _store.SetTagValue(dimensionId, value, text); ShowGlobal(true); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
     }
     private ContextMenuStrip DimensionContext(int id)
     {
         var dimension = _store.Data.TagSchema.Single(x => x.DimensionId == id); var menu = CreateDarkContextMenu();
-        menu.Items.Add("Rename", null, (_, _) => { var name = Prompt("Dimension name", dimension.Name); if (name is not null) { _store.RenameDimension(id, name); ShowGlobal(); } });
-        menu.Items.Add(dimension.IsMultiSelect ? "Change to single-select" : "Change to multi-select", null, (_, _) => { _store.SetDimensionMultiSelect(id, !dimension.IsMultiSelect); ShowGlobal(); });
-        menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) { _store.DeleteDimension(id); ShowGlobal(); } }); return menu;
+        menu.Items.Add("Rename", null, (_, _) => { var name = Prompt("Dimension name", dimension.Name); if (name is not null) { _store.RenameDimension(id, name); ShowGlobal(true); } });
+        menu.Items.Add(dimension.IsMultiSelect ? "Change to single-select" : "Change to multi-select", null, (_, _) => { _store.SetDimensionMultiSelect(id, !dimension.IsMultiSelect); ShowGlobal(true); });
+        menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) { _store.DeleteDimension(id); ShowGlobal(true); } }); return menu;
     }
     private ContextMenuStrip? ValueContext(int dimensionId, int value)
     {
         if (value == 0) return null;
         var dimension = _store.Data.TagSchema.Single(x => x.DimensionId == dimensionId); var menu = CreateDarkContextMenu();
-        menu.Items.Add("Edit", null, (_, _) => { var text = Prompt("Value display text", dimension.Values[value]); if (text is not null) { _store.SetTagValue(dimensionId, value, text); ShowGlobal(); } });
-        menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) == DialogResult.Yes) { _store.DeleteTagValue(dimensionId, value); ShowGlobal(); } }); return menu;
+        menu.Items.Add("Edit", null, (_, _) => { var text = Prompt("Value display text", dimension.Values[value]); if (text is not null) { _store.SetTagValue(dimensionId, value, text); ShowGlobal(true); } });
+        menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) == DialogResult.Yes) { _store.DeleteTagValue(dimensionId, value); ShowGlobal(true); } }); return menu;
     }
     private void ExpandGlobalSection(GroupBox group, int width)
     {
@@ -1582,7 +1591,7 @@ public sealed class MainForm : Form
         var group = new GroupBox { Text = title, Width = 540, Height = 285, Margin = new Padding(16), Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black }; var list = new ListBox { Left = 14, Top = 38, Width = 510, Height = 165, DisplayMember = "Text", DataSource = options.ToList(), Font = new Font(Font.FontFamily, 14, FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black, BackColor = IsDarkTheme ? Color.FromArgb(25, 25, 25) : Color.White }; group.Controls.Add(list);
         var addButton = TextButton(_t["Add"], (_, _) => add()); addButton.Location = new Point(14, 215); group.Controls.Add(addButton);
         var editButton = TextButton(_t["Edit"], (_, _) => { if (list.SelectedItem is Selection<int> s) edit(s.Value); }); editButton.Location = new Point(116, 215); group.Controls.Add(editButton);
-        var deleteButton = TextButton(_t["Delete"], (_, _) => { if (list.SelectedItem is not Selection<int> s) return; if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; try { if (title == _t["Dimensions"]) _store.DeleteDimension(s.Value); else _store.DeleteRegionCommand(s.Value); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } }); deleteButton.Location = new Point(218, 215); group.Controls.Add(deleteButton);
+        var deleteButton = TextButton(_t["Delete"], (_, _) => { if (list.SelectedItem is not Selection<int> s) return; if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; try { if (title == _t["Dimensions"]) _store.DeleteDimension(s.Value); else _store.DeleteRegionCommand(s.Value); ShowGlobal(true); } catch (Exception ex) { MessageBox.Show(ex.Message); } }); deleteButton.Location = new Point(218, 215); group.Controls.Add(deleteButton);
         return group;
     }
     private void ManageDimension(int id)
@@ -1594,15 +1603,15 @@ public sealed class MainForm : Form
             else if (action == "add") { var n = Prompt("Value display text"); if (n is not null) _store.AddTagValue(id, n); }
             else if (action.StartsWith("edit ") && int.TryParse(action[5..], out var e)) { var n = Prompt("Value display text", d.Values.GetValueOrDefault(e, "")); if (n is not null) _store.SetTagValue(id, e, n); }
             else if (action.StartsWith("delete ") && int.TryParse(action[7..], out var x) && MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) == DialogResult.Yes) _store.DeleteTagValue(id, x);
-            ShowGlobal();
+            ShowGlobal(true);
         } catch (Exception ex) { MessageBox.Show(ex.Message); }
     }
     private GroupBox StatusGroup(StatusKind kind)
     {
         var title = kind == StatusKind.Play ? "Play " + _t["Statuses"] : "Game " + _t["Statuses"]; var statuses = kind == StatusKind.Play ? _store.Data.PlayStatuses : _store.Data.GameStatuses;
         var group = new GroupBox { Text = title, Width = 540, Height = 285, Margin = new Padding(16), Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black }; var list = new ListBox { Left = 14, Top = 38, Width = 510, Height = 165, DisplayMember = "Text", DataSource = statuses.Select(x => new Selection<int>(x.Id, $"{x.Id}: {x.Name} ({x.Color})")).ToList(), Font = new Font(Font.FontFamily, 14, FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black, BackColor = IsDarkTheme ? Color.FromArgb(25, 25, 25) : Color.White }; group.Controls.Add(list);
-        var addButton = TextButton(_t["Add"], (_, _) => { var name = Prompt("Status name"); var color = name is null ? null : Prompt("Color (#RRGGBB)", "#808080"); if (name is not null && color is not null) { _store.AddStatus(kind, name, color); ShowGlobal(); } }); addButton.Location = new Point(14, 215); group.Controls.Add(addButton);
-        var deleteButton = TextButton(_t["Delete"], (_, _) => { if (list.SelectedItem is not Selection<int> s || MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) != DialogResult.Yes) return; try { _store.DeleteStatus(kind, s.Value); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } }); deleteButton.Location = new Point(116, 215); group.Controls.Add(deleteButton);
+        var addButton = TextButton(_t["Add"], (_, _) => { var name = Prompt("Status name"); var color = name is null ? null : Prompt("Color (#RRGGBB)", "#808080"); if (name is not null && color is not null) { _store.AddStatus(kind, name, color); ShowGlobal(true); } }); addButton.Location = new Point(14, 215); group.Controls.Add(addButton);
+        var deleteButton = TextButton(_t["Delete"], (_, _) => { if (list.SelectedItem is not Selection<int> s || MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) != DialogResult.Yes) return; try { _store.DeleteStatus(kind, s.Value); ShowGlobal(true); } catch (Exception ex) { MessageBox.Show(ex.Message); } }); deleteButton.Location = new Point(116, 215); group.Controls.Add(deleteButton);
         return group;
     }
     private void AddGame()

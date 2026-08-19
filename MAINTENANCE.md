@@ -1,6 +1,6 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0a1` (alpha)
+**Current application patch:** `2.1.0a2` (alpha)
 
 ## Patch history
 
@@ -18,6 +18,11 @@
 - Savedata format v4 extends Library card settings from one to two independently selected multi-select dimensions, while retaining and migrating the v3 scalar selection for compatibility.
 - Enlarged the fixed card cover by 1.2×, compressed the right-side status-lamp width and lower single-select strip, and reserved the gained lower-card space for multi-select chips.
 - Made multi-select support explicit in both edit layers: first-level game edit labels every multi-select selection row and provides its orange one-or-more value picker; second-level management labels its shared dimension area and explains right-click type/value operations.
+
+### 2.1.0a2 (alpha)
+
+- Fixed the custom dark edit/delete context menu items being allocated at the native default width, which truncated their labels.
+- Global-management mutations now restore the previous vertical scroll offset after rebuilding the page, so adding or editing a dimension value remains at the row being worked on. The same restoration applies to save roots, region commands, statuses, button icons, dimension changes and their legacy management controls.
 
 ### 2.0.2a (alpha)
 
