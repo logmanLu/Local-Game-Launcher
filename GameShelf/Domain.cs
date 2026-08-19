@@ -7,7 +7,7 @@ public enum StatusKind { Play, Game }
 
 public sealed class AppData
 {
-    public const int CurrentFormatVersion = 2;
+    public const int CurrentFormatVersion = 4;
     public int Version { get; set; } = CurrentFormatVersion;
     public AppSettings Settings { get; set; } = new();
     public Dictionary<int, string> RegionCommands { get; set; } = new() { [0] = "" };
@@ -39,7 +39,14 @@ public sealed class AppSettings
     public int WindowHeight { get; set; } = 720;
     public Dictionary<int, int?> Filters { get; set; } = [];
     public Dictionary<int, List<int>> SelectedTagFilters { get; set; } = [];
+    public int? SelectedPlayStatusFilter { get; set; }
+    public int? SelectedGameStatusFilter { get; set; }
+    public string TitleSearch { get; set; } = "";
     public List<int> HomeDisplayDimensionIds { get; set; } = [];
+    /// <summary>Legacy single-card multi-dimension choice, retained for v3 compatibility.</summary>
+    public int? HomeMultiDisplayDimensionId { get; set; }
+    /// <summary>Up to two multi-select dimensions shown on Library cards.</summary>
+    public List<int> HomeMultiDisplayDimensionIds { get; set; } = [];
     public Dictionary<string, string> ButtonIcons { get; set; } = [];
     public Dictionary<int, RunningGameProcess> RunningGameProcesses { get; set; } = [];
     [JsonExtensionData] public Dictionary<string, JsonElement>? UnknownFields { get; set; }
@@ -57,6 +64,7 @@ public sealed class TagDimension
 {
     public int DimensionId { get; set; }
     public string Name { get; set; } = "";
+    public bool IsMultiSelect { get; set; }
     public Dictionary<int, string> Values { get; set; } = new() { [0] = "none" };
     [JsonExtensionData] public Dictionary<string, JsonElement>? UnknownFields { get; set; }
 }
@@ -87,6 +95,8 @@ public sealed class GameEntry
     public int GameStatusId { get; set; }
     public int RegionCommandId { get; set; }
     public List<int> Tags { get; set; } = [];
+    /// <summary>One value collection per TagSchema position. Only multi-select dimensions use a non-empty collection.</summary>
+    public List<List<int>> MultiTags { get; set; } = [];
     [JsonExtensionData] public Dictionary<string, JsonElement>? UnknownFields { get; set; }
 }
 
@@ -115,6 +125,8 @@ public sealed class ImportedDimension
     public string Name { get; set; } = "";
     public Dictionary<int, string> Values { get; set; } = [];
     public int GameValue { get; set; }
+    public bool IsMultiSelect { get; set; }
+    public List<int> GameValues { get; set; } = [];
 }
 
 public static class Defaults

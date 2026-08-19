@@ -31,6 +31,7 @@ public sealed class MainForm : Form
     private Rectangle _restoreBounds;
     private FormBorderStyle _restoreBorderStyle = FormBorderStyle.Sizable;
     private readonly Dictionary<int, DateTime> _playStatusClicks = [];
+    private readonly Dictionary<int, DateTime> _gameStatusClicks = [];
     private readonly Panel _resizeMask = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(27, 29, 30), Visible = false };
     private bool _interactiveResize;
     private bool _resizeRefreshQueued;
@@ -574,41 +575,89 @@ public sealed class MainForm : Form
         _top.Resize += (_, _) => filterButton.Left = _top.ClientSize.Width - filterButton.Width - S(20);
         _top.Controls.Add(filterButton);
 
-        var chips = new FlowLayoutPanel { Left = S(342), Top = S(14), Height = S(78), Width = Math.Max(S(100), filterButton.Left - S(358)), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, FlowDirection = FlowDirection.RightToLeft, WrapContents = true, AutoScroll = true, Padding = new Padding(S(2)) };
+        var clearSearch = CreateIconButton("×", "Clear title search", (_, _) => { _store.Data.Settings.TitleSearch = ""; _store.Save(); ShowLibrary(); });
+        clearSearch.Width = S(54); clearSearch.Height = S(54); clearSearch.Visible = !string.IsNullOrWhiteSpace(_store.Data.Settings.TitleSearch);
+        var search = new TextBox { Text = _store.Data.Settings.TitleSearch, PlaceholderText = "Search titles", Width = S(250), Height = S(54), BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(22, 24, 25), ForeColor = Color.FromArgb(181, 228, 245), Font = new Font(Font.FontFamily, S(14), FontStyle.Bold) };
+        void PositionSearch()
+        {
+            clearSearch.Location = new Point(filterButton.Left - clearSearch.Width - S(8), S(25));
+            search.Location = new Point(clearSearch.Left - search.Width - S(8), S(25));
+        }
+        PositionSearch(); _top.Resize += (_, _) => PositionSearch();
+        search.TextChanged += (_, _) =>
+        {
+            _store.Data.Settings.TitleSearch = search.Text;
+            clearSearch.Visible = !string.IsNullOrWhiteSpace(search.Text);
+            _store.Save(); PopulateLibraryCards();
+        };
+        _top.Controls.Add(search); _top.Controls.Add(clearSearch);
+
+        var chips = new FlowLayoutPanel { Left = S(342), Top = S(14), Height = S(78), Width = Math.Max(S(100), search.Left - S(350)), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, FlowDirection = FlowDirection.RightToLeft, WrapContents = true, AutoScroll = true, Padding = new Padding(S(2)) };
+        _top.Resize += (_, _) => chips.Width = Math.Max(S(100), search.Left - chips.Left - S(8));
         foreach (var d in _store.Data.TagSchema)
         {
             if (!_store.Data.Settings.SelectedTagFilters.TryGetValue(d.DimensionId, out var values)) continue;
-            foreach (var value in values.Distinct().Where(value => value != 0 && d.Values.ContainsKey(value))) chips.Controls.Add(FilterChip(d.Values[value]));
+            foreach (var value in values.Distinct().Where(value => value != 0 && d.Values.ContainsKey(value))) chips.Controls.Add(FilterChip(d.Values[value], d.IsMultiSelect ? MultiTagColor : SingleTagColor));
         }
+        if (_store.Data.Settings.SelectedPlayStatusFilter is int play) chips.Controls.Add(FilterChip(StatusName(StatusKind.Play, play), PlayFilterColor));
+        if (_store.Data.Settings.SelectedGameStatusFilter is int game) chips.Controls.Add(FilterChip(StatusName(StatusKind.Game, game), GameFilterColor));
         _top.Controls.Add(chips);
     }
-    private Label FilterChip(string text) => new()
+    private static readonly Color SingleTagColor = Color.FromArgb(103, 74, 142);
+    private static readonly Color MultiTagColor = Color.FromArgb(190, 103, 42);
+    private static readonly Color PlayFilterColor = Color.FromArgb(71, 151, 102);
+    private static readonly Color GameFilterColor = Color.FromArgb(62, 125, 181);
+    private Label FilterChip(string text, Color? color = null) => new()
     {
         Text = text, AutoSize = true, Padding = new Padding(S(9), S(5), S(9), S(5)), Margin = new Padding(S(3)),
-        BackColor = Color.FromArgb(103, 74, 142), ForeColor = Color.White, Font = new Font(Font.FontFamily, Math.Max(10, S(11)), FontStyle.Bold)
+        BackColor = color ?? SingleTagColor, ForeColor = Color.White, Font = new Font(Font.FontFamily, Math.Max(10, S(11)), FontStyle.Bold)
     };
     private void ShowFilterPopup()
     {
         var popup = new Form { Text = "Filter games", StartPosition = FormStartPosition.CenterParent, Size = new Size(S(760), S(560)), MinimumSize = new Size(580, 420), BackColor = Color.FromArgb(35, 38, 39), ForeColor = Color.White, Font = Font };
         var scroll = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(S(20)), BackColor = popup.BackColor };
         var selected = _store.Data.Settings.SelectedTagFilters.ToDictionary(x => x.Key, x => x.Value.ToHashSet());
-        foreach (var dimension in _store.Data.TagSchema)
+        var selectedPlay = _store.Data.Settings.SelectedPlayStatusFilter;
+        var selectedGame = _store.Data.Settings.SelectedGameStatusFilter;
+        FlowLayoutPanel Section(string title, Color color)
         {
             var section = new FlowLayoutPanel { Width = S(680), AutoSize = true, WrapContents = true, Margin = new Padding(0, 0, 0, S(18)), BackColor = Color.FromArgb(42, 46, 48), Padding = new Padding(S(12)) };
-            section.Controls.Add(new Label { Text = dimension.Name, Width = S(620), Height = S(30), Font = new Font(Font.FontFamily, S(16), FontStyle.Bold), ForeColor = Color.FromArgb(244, 204, 89) });
+            section.Controls.Add(new Label { Text = title, Width = S(620), Height = S(30), Font = new Font(Font.FontFamily, S(16), FontStyle.Bold), ForeColor = color });
+            scroll.Controls.Add(section); return section;
+        }
+        CheckBox Tile(string text, bool check, Color color)
+        {
+            var tileFont = new Font(Font.FontFamily, Math.Max(12, S(12)), FontStyle.Bold); var textSize = TextRenderer.MeasureText(text, tileFont);
+            var tile = new CheckBox { Text = text, Appearance = Appearance.Button, AutoSize = false, Width = textSize.Width + S(30), Height = Math.Max(S(46), textSize.Height + S(18)), TextAlign = ContentAlignment.MiddleCenter, FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false, Padding = new Padding(S(8), S(4), S(8), S(4)), Margin = new Padding(S(4)), ForeColor = Color.White, BackColor = Color.FromArgb(55, 61, 63), Font = tileFont, Checked = check };
+            tile.FlatAppearance.CheckedBackColor = color; tile.FlatAppearance.BorderColor = color; return tile;
+        }
+        void AddStatusFilter(string title, StatusKind kind, Color color, Func<int?> getSelected, Action<int?> setSelected)
+        {
+            var section = Section(title, color); var any = Tile("Any", !getSelected().HasValue, color); section.Controls.Add(any);
+            var tiles = new List<(int id, CheckBox tile)>();
+            foreach (var status in kind == StatusKind.Play ? _store.Data.PlayStatuses : _store.Data.GameStatuses)
+            {
+                var item = Tile(status.Name, getSelected() == status.Id, color); tiles.Add((status.Id, item)); section.Controls.Add(item);
+                item.CheckedChanged += (_, _) => { if (!item.Checked) return; setSelected(status.Id); any.Checked = false; foreach (var other in tiles.Where(other => other.tile != item)) other.tile.Checked = false; };
+            }
+            any.CheckedChanged += (_, _) => { if (!any.Checked) return; setSelected(null); foreach (var item in tiles) item.tile.Checked = false; };
+        }
+        AddStatusFilter("Play status", StatusKind.Play, PlayFilterColor, () => selectedPlay, value => selectedPlay = value);
+        AddStatusFilter("Game status", StatusKind.Game, GameFilterColor, () => selectedGame, value => selectedGame = value);
+        foreach (var dimension in _store.Data.TagSchema)
+        {
+            var color = dimension.IsMultiSelect ? MultiTagColor : SingleTagColor;
+            var section = Section(dimension.Name, color);
             foreach (var value in dimension.Values.Where(x => x.Key != 0).OrderBy(x => x.Key))
             {
-                var id = value.Key; var tileFont = new Font(Font.FontFamily, Math.Max(12, S(12)), FontStyle.Bold); var textSize = TextRenderer.MeasureText(value.Value, tileFont);
-                var tile = new CheckBox { Text = value.Value, Appearance = Appearance.Button, AutoSize = false, Width = textSize.Width + S(30), Height = Math.Max(S(46), textSize.Height + S(18)), TextAlign = ContentAlignment.MiddleCenter, FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false, Padding = new Padding(S(8), S(4), S(8), S(4)), Margin = new Padding(S(4)), ForeColor = Color.White, BackColor = Color.FromArgb(72, 83, 93), Font = tileFont, Checked = selected.TryGetValue(dimension.DimensionId, out var set) && set.Contains(id) };
-                tile.FlatAppearance.CheckedBackColor = Color.FromArgb(104, 76, 151); tile.FlatAppearance.BorderColor = Color.FromArgb(154, 122, 211);
+                var id = value.Key; var tile = Tile(value.Value, selected.TryGetValue(dimension.DimensionId, out var set) && set.Contains(id), color);
                 tile.CheckedChanged += (_, _) => { if (!selected.TryGetValue(dimension.DimensionId, out var values)) selected[dimension.DimensionId] = values = []; if (tile.Checked) values.Add(id); else values.Remove(id); };
                 section.Controls.Add(tile);
             }
-            scroll.Controls.Add(section);
         }
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = S(92), FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(S(12), S(8), S(12), S(8)), BackColor = popup.BackColor };
-        var apply = CreateIconButton("✓", "Apply filters", (_, _) => { _store.Data.Settings.SelectedTagFilters = selected.Where(x => x.Value.Any(v => v != 0)).ToDictionary(x => x.Key, x => x.Value.Where(v => v != 0).Order().ToList()); _store.Save(); popup.DialogResult = DialogResult.OK; popup.Close(); });
-        var clear = CreateIconButton("×", "Clear filters", (_, _) => { selected.Clear(); foreach (var check in Descendants(scroll).OfType<CheckBox>()) check.Checked = false; });
+        var apply = CreateIconButton("✓", "Apply filters", (_, _) => { _store.Data.Settings.SelectedTagFilters = selected.Where(x => x.Value.Any(v => v != 0)).ToDictionary(x => x.Key, x => x.Value.Where(v => v != 0).Order().ToList()); _store.Data.Settings.SelectedPlayStatusFilter = selectedPlay; _store.Data.Settings.SelectedGameStatusFilter = selectedGame; _store.Save(); popup.DialogResult = DialogResult.OK; popup.Close(); });
+        var clear = CreateIconButton("×", "Clear filters", (_, _) => { selected.Clear(); selectedPlay = null; selectedGame = null; foreach (var check in Descendants(scroll).OfType<CheckBox>()) check.Checked = false; });
         buttons.Controls.Add(apply); buttons.Controls.Add(clear); popup.Controls.Add(scroll); popup.Controls.Add(buttons);
         if (popup.ShowDialog(this) == DialogResult.OK) ShowLibrary();
     }
@@ -616,17 +665,27 @@ public sealed class MainForm : Form
     {
         using var popup = new Form { Text = "Library card dimensions", StartPosition = FormStartPosition.CenterParent, Size = new Size(S(650), S(520)), MinimumSize = new Size(520, 420), BackColor = Color.FromArgb(35, 38, 39), ForeColor = Color.White, Font = Font };
         var selected = _store.Data.Settings.HomeDisplayDimensionIds.ToHashSet();
-        var message = new Label { Dock = DockStyle.Top, Height = S(56), Padding = new Padding(S(18), S(12), S(18), 0), Text = "Choose up to three dimensions to show on Library cards.", ForeColor = Color.FromArgb(244, 204, 89), Font = new Font(Font.FontFamily, S(15), FontStyle.Bold) };
+        var selectedMulti = _store.Data.Settings.HomeMultiDisplayDimensionIds.ToHashSet();
+        var message = new Label { Dock = DockStyle.Top, Height = S(80), Padding = new Padding(S(18), S(12), S(18), 0), Text = "Choose up to three single-select dimensions and one multi-select dimension to show on Library cards.", ForeColor = Color.FromArgb(244, 204, 89), Font = new Font(Font.FontFamily, S(15), FontStyle.Bold) };
         var list = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(S(18)), BackColor = popup.BackColor };
-        foreach (var dimension in _store.Data.TagSchema)
+        list.Controls.Add(new Label { Text = "Single-select dimensions", Width = S(560), Height = S(34), ForeColor = Color.FromArgb(190, 151, 235), Font = new Font(Font.FontFamily, S(15), FontStyle.Bold) });
+        foreach (var dimension in _store.Data.TagSchema.Where(dimension => !dimension.IsMultiSelect))
         {
             var id = dimension.DimensionId; var itemFont = new Font(Font.FontFamily, S(14), FontStyle.Bold); var measured = TextRenderer.MeasureText(dimension.Name, itemFont);
             var item = new CheckBox { Text = dimension.Name, Appearance = Appearance.Button, Checked = selected.Contains(id), AutoSize = false, Width = measured.Width + S(30), Height = Math.Max(S(46), measured.Height + S(18)), TextAlign = ContentAlignment.MiddleCenter, Margin = new Padding(S(6)), FlatStyle = FlatStyle.Flat, ForeColor = Color.White, BackColor = Color.FromArgb(72, 83, 93), Font = itemFont };
             item.FlatAppearance.CheckedBackColor = Color.FromArgb(104, 76, 151); item.CheckedChanged += (_, _) => { if (item.Checked && !selected.Contains(id) && selected.Count >= 3) { item.Checked = false; return; } if (item.Checked) selected.Add(id); else selected.Remove(id); };
             list.Controls.Add(item);
         }
+        list.Controls.Add(new Label { Text = "Choose up to two multi-select dimensions", Width = S(560), Height = S(34), Margin = new Padding(S(6), S(20), S(6), S(6)), ForeColor = MultiTagColor, Font = new Font(Font.FontFamily, S(15), FontStyle.Bold) });
+        foreach (var dimension in _store.Data.TagSchema.Where(dimension => dimension.IsMultiSelect))
+        {
+            var id = dimension.DimensionId; var itemFont = new Font(Font.FontFamily, S(14), FontStyle.Bold); var measured = TextRenderer.MeasureText(dimension.Name, itemFont);
+            var item = new CheckBox { Text = dimension.Name, Appearance = Appearance.Button, Checked = selectedMulti.Contains(id), AutoSize = false, Width = measured.Width + S(30), Height = Math.Max(S(46), measured.Height + S(18)), TextAlign = ContentAlignment.MiddleCenter, Margin = new Padding(S(6)), FlatStyle = FlatStyle.Flat, ForeColor = Color.White, BackColor = Color.FromArgb(72, 83, 93), Font = itemFont };
+            item.FlatAppearance.CheckedBackColor = MultiTagColor; item.CheckedChanged += (_, _) => { if (item.Checked && !selectedMulti.Contains(id) && selectedMulti.Count >= 2) { item.Checked = false; return; } if (item.Checked) selectedMulti.Add(id); else selectedMulti.Remove(id); };
+            list.Controls.Add(item);
+        }
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = S(92), FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(S(12), S(8), S(12), S(8)), BackColor = popup.BackColor };
-        var save = CreateIconButton("✓", "Save library card dimensions", (_, _) => { _store.SetHomeDisplayDimensions(selected); popup.DialogResult = DialogResult.OK; }); buttons.Controls.Add(save);
+        var save = CreateIconButton("✓", "Save library card dimensions", (_, _) => { _store.SetHomeDisplayDimensions(selected, selectedMulti); popup.DialogResult = DialogResult.OK; }); buttons.Controls.Add(save);
         popup.Controls.AddRange([list, message, buttons]); if (popup.ShowDialog(this) == DialogResult.OK) ShowLibrary();
     }
 
@@ -716,12 +775,33 @@ public sealed class MainForm : Form
     {
         if (_store.RefreshAllGamePathStatuses()) _store.Save();
         _page = "library"; _management = _management && _page == "library"; BuildTop(!_management); Clear();
+        PopulateLibraryCards();
+    }
+    private void PopulateLibraryCards()
+    {
+        if (_page != "library") return;
+        Clear();
         var grid = new FlowLayoutPanel { Width = _content.ClientSize.Width - 60, AutoSize = true, WrapContents = true };
         foreach (var game in FilteredGames()) grid.Controls.Add(GameCard(game));
         _content.Controls.Add(grid);
         EnableWheelScroll(grid);
     }
-    private IEnumerable<GameEntry> FilteredGames() => _store.Data.Games.Where(g => _store.Data.TagSchema.Select((d, i) => !_store.Data.Settings.SelectedTagFilters.TryGetValue(d.DimensionId, out var values) || values.All(v => v == 0) || values.Contains(g.Tags[i])).All(x => x));
+    private IEnumerable<GameEntry> FilteredGames()
+    {
+        var settings = _store.Data.Settings;
+        var search = settings.TitleSearch.Replace("\\n", "\n").Trim();
+        return _store.Data.Games.Where(game =>
+            (string.IsNullOrWhiteSpace(search) || DisplayTitle(game.Title).Contains(search, StringComparison.CurrentCultureIgnoreCase)) &&
+            (!settings.SelectedPlayStatusFilter.HasValue || game.PlayStatusId == settings.SelectedPlayStatusFilter.Value) &&
+            (!settings.SelectedGameStatusFilter.HasValue || game.GameStatusId == settings.SelectedGameStatusFilter.Value) &&
+            _store.Data.TagSchema.Select((dimension, index) =>
+            {
+                if (!settings.SelectedTagFilters.TryGetValue(dimension.DimensionId, out var values) || values.Count == 0) return true;
+                return dimension.IsMultiSelect
+                    ? values.Intersect(game.MultiTags.ElementAtOrDefault(index) ?? []).Any()
+                    : values.Contains(game.Tags.ElementAtOrDefault(index));
+            }).All(match => match));
+    }
     private Control GameCard(GameEntry game)
     {
         return BuildGameCard(game);
@@ -748,40 +828,55 @@ public sealed class MainForm : Form
     {
         var cardWidth = S(390); var cardHeight = S(510); var baseColor = Color.FromArgb(38, 42, 42);
         var card = new Panel { Width = cardWidth, Height = cardHeight, Margin = new Padding(S(16)), BorderStyle = BorderStyle.FixedSingle, AccessibleName = game.Title, BackColor = baseColor };
-        var image = new PictureBox { Left = S(9), Top = S(9), Width = cardWidth - S(18), Height = S(219), SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), Cursor = _management ? Cursors.Default : Cursors.Hand };
-        var id = new Label { Text = $"#{game.Id}", Left = S(12), Top = S(238), Width = cardWidth - S(24), Height = S(40), Font = new Font(Font.FontFamily, S(24), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
-        var title = new Label { Text = game.Title, Left = S(12), Top = S(280), Width = cardWidth - S(24), Height = S(82), AutoEllipsis = true, Font = new Font(Font.FontFamily, S(22), FontStyle.Bold), ForeColor = Color.White };
-        var tags = new FlowLayoutPanel { Left = S(9), Top = S(365), Width = cardWidth - S(18), Height = S(71), AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
+        var imageHeight = S(263); var imageWidth = imageHeight * 3 / 4; var rightLeft = S(9) + imageWidth + S(10); var rightWidth = cardWidth - rightLeft - S(9);
+        var image = new PictureBox { Left = S(9), Top = S(9), Width = imageWidth, Height = imageHeight, SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), Cursor = _management ? Cursors.Default : Cursors.Hand };
+        var statusGap = S(7); var statusHeight = (imageHeight - statusGap) / 2;
+        var playStatus = StatusBlock(StatusKind.Play, game.PlayStatusId, new Rectangle(rightLeft, S(9), rightWidth, statusHeight));
+        var gameStatus = StatusBlock(StatusKind.Game, game.GameStatusId, new Rectangle(rightLeft, S(9) + statusHeight + statusGap, rightWidth, statusHeight));
+        var id = new Label { Text = game.Id.ToString(), Left = S(12), Top = S(278), Width = cardWidth - S(24), Height = S(30), Font = new Font(Font.FontFamily, S(22), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
+        var title = new Label { Text = DisplayTitle(game.Title), Left = S(12), Top = S(310), Width = cardWidth - S(24), Height = S(60), AutoEllipsis = true, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = Color.White };
+        var singleTags = new FlowLayoutPanel { Left = S(9), Top = S(374), Width = cardWidth - S(18), Height = S(42), AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
         foreach (var dimension in HomeDisplayDimensions())
         {
             var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == dimension.DimensionId);
             var text = index >= 0 ? dimension.Values.GetValueOrDefault(game.Tags.ElementAtOrDefault(index)) ?? string.Empty : string.Empty;
-            if (!string.IsNullOrWhiteSpace(text)) tags.Controls.Add(FilterChip(text));
+            if (!string.IsNullOrWhiteSpace(text)) singleTags.Controls.Add(FilterChip(text, SingleTagColor));
         }
-        card.Controls.AddRange([image, id, title, tags]);
-        var statusHeight = S(59); var gap = S(8); var statusWidth = (cardWidth - S(18) - gap) / 2;
-        card.Controls.Add(StatusBlock(StatusKind.Play, game.PlayStatusId, new Rectangle(S(9), cardHeight - statusHeight - S(9), statusWidth, statusHeight)));
-        card.Controls.Add(StatusBlock(StatusKind.Game, game.GameStatusId, new Rectangle(S(9) + statusWidth + gap, cardHeight - statusHeight - S(9), statusWidth, statusHeight)));
+        var multiTags = new FlowLayoutPanel { Left = S(9), Top = S(420), Width = cardWidth - S(18), Height = S(81), AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
+        foreach (var multiDimension in HomeMultiDisplayDimensions())
+        {
+            var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == multiDimension.DimensionId);
+            foreach (var value in game.MultiTags.ElementAtOrDefault(index) ?? [])
+            {
+                var text = multiDimension.Values.GetValueOrDefault(value) ?? "";
+                if (!string.IsNullOrWhiteSpace(text)) multiTags.Controls.Add(FilterChip(text, MultiTagColor));
+            }
+        }
+        card.Controls.AddRange([image, playStatus, gameStatus, id, title, singleTags, multiTags]);
         if (_management)
         {
             void DeleteOnRightClick(object? _, MouseEventArgs e) { if (e.Button == MouseButtons.Right) DeleteGame(game); }
             foreach (Control child in card.Controls) child.MouseUp += DeleteOnRightClick;
-            foreach (Control child in tags.Controls) child.MouseUp += DeleteOnRightClick;
+            foreach (Control child in singleTags.Controls.Cast<Control>().Concat(multiTags.Controls.Cast<Control>())) child.MouseUp += DeleteOnRightClick;
             card.MouseUp += DeleteOnRightClick;
         }
         else
         {
             void Open(object? _, MouseEventArgs e) { if (e.Button == MouseButtons.Left) { _selectedId = game.Id; ShowDetail(); } }
-            void Highlight(bool enabled) { card.BackColor = enabled ? Color.FromArgb(57, 68, 62) : baseColor; tags.BackColor = card.BackColor; }
-            card.MouseUp += Open; image.MouseUp += Open; id.MouseUp += Open; title.MouseUp += Open; tags.MouseUp += Open;
-            foreach (Control child in tags.Controls) child.MouseUp += Open;
+            void Highlight(bool enabled) { card.BackColor = enabled ? Color.FromArgb(57, 68, 62) : baseColor; singleTags.BackColor = card.BackColor; multiTags.BackColor = card.BackColor; }
+            card.MouseUp += Open; image.MouseUp += Open; id.MouseUp += Open; title.MouseUp += Open; singleTags.MouseUp += Open; multiTags.MouseUp += Open; playStatus.MouseUp += Open; gameStatus.MouseUp += Open;
+            foreach (Control child in singleTags.Controls.Cast<Control>().Concat(multiTags.Controls.Cast<Control>())) child.MouseUp += Open;
             card.MouseEnter += (_, _) => Highlight(true); card.MouseLeave += (_, _) => Highlight(false); image.MouseEnter += (_, _) => Highlight(true); image.MouseLeave += (_, _) => Highlight(false);
         }
         return card;
     }
     private IEnumerable<TagDimension> HomeDisplayDimensions() => _store.Data.Settings.HomeDisplayDimensionIds
         .Select(id => _store.Data.TagSchema.FirstOrDefault(dimension => dimension.DimensionId == id))
+        .Where(dimension => dimension is { IsMultiSelect: false }).Cast<TagDimension>();
+    private IEnumerable<TagDimension> HomeMultiDisplayDimensions() => _store.Data.Settings.HomeMultiDisplayDimensionIds
+        .Select(id => _store.Data.TagSchema.FirstOrDefault(dimension => dimension.IsMultiSelect && dimension.DimensionId == id))
         .Where(dimension => dimension is not null).Cast<TagDimension>();
+    private static string DisplayTitle(string title) => (title ?? "").Replace("\\n", "\n");
     private Image LoadImage(GameEntry g)
     {
         var file = _store.ImagePath(g);
@@ -922,13 +1017,19 @@ public sealed class MainForm : Form
         // aligns with the number row and its bottom aligns with the tag area.
         var imageColumnWidth = sectionWidth / 2; var headlineWidth = sectionWidth - imageColumnWidth; var headlineContentWidth = headlineWidth - S(20);
         var titleFont = new Font(Font.FontFamily, S(34), FontStyle.Bold);
-        var titleMeasure = TextRenderer.MeasureText(game.Title, titleFont, new Size(headlineContentWidth, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
+        var displayTitle = DisplayTitle(game.Title);
+        var titleMeasure = TextRenderer.MeasureText(displayTitle, titleFont, new Size(headlineContentWidth, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
         var tagChips = new List<Label>();
         for (var index = 0; index < _store.Data.TagSchema.Count; index++)
         {
-            var dimension = _store.Data.TagSchema[index]; var value = dimension.Values.GetValueOrDefault(game.Tags.ElementAtOrDefault(index)) ?? "";
-            if (string.IsNullOrWhiteSpace(value)) continue;
-            var chip = FilterChip($"{dimension.Name} : {value}"); chip.Margin = new Padding(0, S(3), 0, S(3)); chip.MaximumSize = new Size(headlineContentWidth, 0); tagChips.Add(chip);
+            var dimension = _store.Data.TagSchema[index];
+            var values = dimension.IsMultiSelect ? game.MultiTags.ElementAtOrDefault(index) ?? [] : [game.Tags.ElementAtOrDefault(index)];
+            foreach (var id in values)
+            {
+                var value = dimension.Values.GetValueOrDefault(id) ?? "";
+                if (string.IsNullOrWhiteSpace(value)) continue;
+                var chip = FilterChip($"{dimension.Name} : {value}", dimension.IsMultiSelect ? MultiTagColor : SingleTagColor); chip.Margin = new Padding(0, S(3), 0, S(3)); chip.MaximumSize = new Size(headlineContentWidth, 0); tagChips.Add(chip);
+            }
         }
         var tagHeight = Math.Max(S(38), tagChips.Sum(chip => chip.PreferredSize.Height + chip.Margin.Vertical));
         var contentFirstHeight = S(104) + titleMeasure.Height + S(16) + tagHeight;
@@ -960,7 +1061,7 @@ public sealed class MainForm : Form
             numberAndLaunch.Controls.Add(launch, 1, 0);
         }
         headline.Controls.Add(numberAndLaunch, 0, 0);
-        headline.Controls.Add(new Label { Text = game.Title, AutoSize = true, MaximumSize = new Size(headlineContentWidth, 0), Font = titleFont, ForeColor = Color.White, Margin = new Padding(0, S(8), 0, S(8)) }, 0, 1);
+        headline.Controls.Add(new Label { Text = displayTitle, AutoSize = true, MaximumSize = new Size(headlineContentWidth, 0), Font = titleFont, ForeColor = Color.White, Margin = new Padding(0, S(8), 0, S(8)) }, 0, 1);
         var tags = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = false, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = Padding.Empty, BackColor = page.BackColor };
         foreach (var chip in tagChips) tags.Controls.Add(chip);
         headline.Controls.Add(tags, 0, 2); first.Controls.Add(headline, 1, 0);
@@ -975,7 +1076,7 @@ public sealed class MainForm : Form
         var lights = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Fill, Margin = new Padding(S(18), S(18), 0, S(18)), BackColor = page.BackColor };
         lights.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); lights.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         var playLight = StatusBlock(StatusKind.Play, game.PlayStatusId, Rectangle.Empty, (_, e) => HandlePlayStatusClick(game, e)); playLight.Dock = DockStyle.Fill; playLight.Margin = new Padding(0, 0, S(6), 0);
-        var gameLight = StatusBlock(StatusKind.Game, game.GameStatusId, Rectangle.Empty); gameLight.Dock = DockStyle.Fill; gameLight.Margin = new Padding(S(6), 0, 0, 0);
+        var gameLight = StatusBlock(StatusKind.Game, game.GameStatusId, Rectangle.Empty, (_, e) => HandleGameStatusClick(game, e)); gameLight.Dock = DockStyle.Fill; gameLight.Margin = new Padding(S(6), 0, 0, 0);
         lights.Controls.Add(playLight, 0, 0); lights.Controls.Add(gameLight, 1, 0);
         second.Controls.Add(lights, 1, 0);
 
@@ -1000,6 +1101,16 @@ public sealed class MainForm : Form
             _playStatusClicks.Remove(game.Id); _store.SetNextPlayStatus(game.Id); ShowDetail(); return;
         }
         _playStatusClicks[game.Id] = now;
+    }
+    private void HandleGameStatusClick(GameEntry game, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        var now = DateTime.UtcNow;
+        if (_gameStatusClicks.TryGetValue(game.Id, out var previous) && now - previous <= TimeSpan.FromSeconds(.8))
+        {
+            _gameStatusClicks.Remove(game.Id); _store.SetNextInvalidGameStatus(game.Id); ShowDetail(); return;
+        }
+        _gameStatusClicks[game.Id] = now;
     }
     private Label DetailLabel(string text, int? maximumWidth = null) => new() { Text = text, AutoSize = true, MaximumSize = new Size(maximumWidth ?? Math.Max(S(420), _content.ClientSize.Width - S(100)), 0), Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black, Margin = new Padding(0, S(8), 0, S(8)) };
     private Label PathLink(string label, string path, bool valid, int? maximumWidth = null)
@@ -1059,8 +1170,8 @@ public sealed class MainForm : Form
         form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, S(190))); form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, S(105)));
         void Row(string title, Control field, Action reset)
         {
-            var row = form.RowCount++; var tall = field is TextBox { Multiline: true }; var panelField = field is FlowLayoutPanel; var tagField = _store.Data.TagSchema.Any(d => d.Name == title); form.RowStyles.Add(new RowStyle(SizeType.Absolute, tall ? 190 : panelField ? 140 : 132));
-            var label = new Label { Text = title, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = tagField ? Color.FromArgb(190, 151, 235) : Color.FromArgb(244, 204, 89) };
+            var row = form.RowCount++; var tall = field is TextBox { Multiline: true }; var panelField = field is FlowLayoutPanel; var dimension = _store.Data.TagSchema.FirstOrDefault(d => title == d.Name || title == $"{d.Name} (multi-select)"); var tagField = dimension is not null; form.RowStyles.Add(new RowStyle(SizeType.Absolute, tall ? 190 : panelField ? 140 : 132));
+            var label = new Label { Text = title, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = tagField ? (dimension?.IsMultiSelect == true ? MultiTagColor : Color.FromArgb(190, 151, 235)) : Color.FromArgb(244, 204, 89) };
             field.Width = 670; field.Anchor = AnchorStyles.Left | AnchorStyles.Right; field.Margin = new Padding(0, tall ? 20 : panelField ? 12 : 26, 12, tall ? 20 : panelField ? 12 : 26); field.Font = new Font(Font.FontFamily, 15, FontStyle.Bold);
             if (field is TextBox input) { input.BackColor = IsDarkTheme ? Color.FromArgb(22, 24, 25) : Color.White; input.ForeColor = IsDarkTheme ? Color.FromArgb(181, 228, 245) : Color.FromArgb(48, 110, 132); }
             if (field is ComboBox choice && !Equals(choice.Tag, "status-selector")) { choice.BackColor = tagField ? Color.FromArgb(48, 39, 61) : Color.FromArgb(22, 24, 25); choice.ForeColor = Color.FromArgb(181, 228, 245); }
@@ -1076,16 +1187,61 @@ public sealed class MainForm : Form
         var saveRoot = ChoiceCombo(_store.Data.SaveRoots.Select(root => new Selection<int>(root.Id, root.Name)).ToList(), draft.SaveRootId); Row("Save root", saveRoot, () => SelectChoice(saveRoot, Defaults.SaveRootGameDirectoryId));
         var gamePick = CreateIconButton("▣", "Choose game executable", (_, _) => { using var d = new OpenFileDialog { Filter = "Executable (*.exe)|*.exe" }; if (d.ShowDialog() == DialogResult.OK) { try { gamePath.Text = _store.ToRcRelativePath(d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }); var gamePanel = new FlowLayoutPanel(); gamePanel.Controls.Add(gamePath); gamePanel.Controls.Add(gamePick); Row("Game path (relative to rc)", gamePanel, () => gamePath.Text = "");
         var savePath = new TextBox { Text = draft.SavePath, ReadOnly = true, Width = 450 }; var savePick = CreateIconButton("▣", "Choose save file", (_, _) => { using var d = new OpenFileDialog(); if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }); var saveFolder = CreateIconButton("▤", "Choose save folder", (_, _) => { using var d = new FolderBrowserDialog(); if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.SelectedPath); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }); var savePanel = new FlowLayoutPanel(); savePanel.Controls.Add(savePath); savePanel.Controls.Add(savePick); savePanel.Controls.Add(saveFolder); Row("Save path (relative)", savePanel, () => savePath.Text = "");
-        var state = StatusCombo(_store.Data.GameStatuses, draft.GameStatusId); Row("Game status", state, () => SelectChoice(state, Defaults.GameDefaultId));
         var regionChoices = _store.Data.RegionCommands.Keys.OrderBy(id => id).Select(id => new Selection<int>(id, RegionAlias(id))).ToList(); var region = ChoiceCombo(regionChoices, draft.RegionCommandId); Row("Region command", region, () => SelectChoice(region, 0));
-        for (var i = 0; i < _store.Data.TagSchema.Count; i++) { var pos = i; var dim = _store.Data.TagSchema[i]; var tag = ChoiceCombo(dim.Values.OrderBy(x => x.Key).Select(x => new Selection<int>(x.Key, x.Value)).ToList(), draft.Tags[i]); Row(dim.Name, tag, () => SelectChoice(tag, 0)); tag.Tag = pos; }
+        var multiTagPickers = new Dictionary<int, FlowLayoutPanel>();
+        for (var i = 0; i < _store.Data.TagSchema.Count; i++)
+        {
+            var pos = i; var dim = _store.Data.TagSchema[i];
+            if (dim.IsMultiSelect)
+            {
+                var picker = MultiTagPicker(dim, draft.MultiTags.ElementAtOrDefault(pos) ?? [0]); multiTagPickers[pos] = picker;
+                Row($"{dim.Name} (multi-select)", picker, () => SetMultiTagPicker(picker, [0]));
+            }
+            else
+            {
+                var tag = ChoiceCombo(dim.Values.OrderBy(x => x.Key).Select(x => new Selection<int>(x.Key, x.Value)).ToList(), draft.Tags[i]); Row(dim.Name, tag, () => SelectChoice(tag, 0)); tag.Tag = pos;
+            }
+        }
         var imageButton = CreateIconButton("▣", _t["Choose image"], (_, _) => { using var dialog = new OpenFileDialog { Filter = "Images (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg" }; if (dialog.ShowDialog() == DialogResult.OK) { try { _store.SetImage(draft.Id, dialog.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } } });
-        var applySave = CreateIconButton("✓", "Save game", (_, _) => { try { draft.Title = title.Text; draft.Note = note.Text; draft.GamePath = gamePath.Text; draft.SavePath = savePath.Text; draft.SaveRootId = ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId); draft.GameStatusId = ChoiceId(state, Defaults.GameDefaultId); draft.RegionCommandId = ChoiceId(region, 0); foreach (var combo in Descendants(form).OfType<ComboBox>()) if (combo.Tag is int tagPos) draft.Tags[tagPos] = ChoiceId(combo, 0); _store.UpdateGame(draft); ShowDetail(); } catch (Exception ex) { MessageBox.Show(ex.Message); } });
+        var applySave = CreateIconButton("✓", "Save game", (_, _) => { try { draft.Title = title.Text; draft.Note = note.Text; draft.GamePath = gamePath.Text; draft.SavePath = savePath.Text; draft.SaveRootId = ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId); draft.RegionCommandId = ChoiceId(region, 0); foreach (var combo in Descendants(form).OfType<ComboBox>()) if (combo.Tag is int tagPos) draft.Tags[tagPos] = ChoiceId(combo, 0); foreach (var (tagPos, picker) in multiTagPickers) draft.MultiTags[tagPos] = picker.Controls.OfType<CheckBox>().Where(check => check.Checked && check.Tag is int).Select(check => (int)check.Tag!).ToList(); _store.UpdateGame(draft); ShowDetail(); } catch (Exception ex) { MessageBox.Show(ex.Message); } });
         var preview = new PictureBox { Left = S(20), Top = S(20), Width = S(220), Height = S(293), SizeMode = PictureBoxSizeMode.StretchImage, Image = LoadImage(_store.GetGame(draft.Id)), BorderStyle = BorderStyle.FixedSingle, AccessibleName = "Current cover" };
         var cropImageButton = CreateIconButton("✂", "Choose and crop cover", (_, _) => { using var dialog = new OpenFileDialog { Filter = "Images (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg" }; if (dialog.ShowDialog() != DialogResult.OK) return; try { if (SelectAndSaveCover(draft.Id, dialog.FileName)) { preview.Image?.Dispose(); preview.Image = LoadImage(_store.GetGame(draft.Id)); } } catch (Exception ex) { MessageBox.Show(ex.Message); } });
         var actions = new Panel { Width = form.Width, Height = S(345), BackColor = form.BackColor }; actions.Controls.Add(preview); cropImageButton.Location = new Point(S(270), S(34)); applySave.Location = new Point(S(376), S(34)); actions.Controls.Add(cropImageButton); actions.Controls.Add(applySave);
         holder.Height = form.PreferredSize.Height + actions.Height; form.Top = 0; actions.Top = form.PreferredSize.Height; holder.Controls.Add(form); holder.Controls.Add(actions);
         _content.Controls.Add(holder); CenterEditLayout(); EnableWheelScroll(holder);
+    }
+    private FlowLayoutPanel MultiTagPicker(TagDimension dimension, IEnumerable<int> selectedValues)
+    {
+        var selected = selectedValues.Where(dimension.Values.ContainsKey).Distinct().ToHashSet();
+        if (selected.Count == 0) selected.Add(0);
+        if (selected.Count > 1) selected.Remove(0);
+        var picker = new FlowLayoutPanel { AutoScroll = true, WrapContents = false, BackColor = Color.FromArgb(46, 32, 23), Padding = new Padding(S(6)), Tag = dimension.DimensionId };
+        var checks = new List<CheckBox>(); var changing = false;
+        foreach (var value in dimension.Values.OrderBy(value => value.Key))
+        {
+            var id = value.Key; var font = new Font(Font.FontFamily, S(13), FontStyle.Bold); var size = TextRenderer.MeasureText(value.Value, font);
+            var check = new CheckBox { Tag = id, Text = value.Value, Checked = selected.Contains(id), Appearance = Appearance.Button, AutoSize = false, Width = size.Width + S(28), Height = Math.Max(S(42), size.Height + S(16)), TextAlign = ContentAlignment.MiddleCenter, FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false, ForeColor = Color.White, BackColor = Color.FromArgb(83, 62, 46), Font = font, Margin = new Padding(S(4)) };
+            check.FlatAppearance.CheckedBackColor = MultiTagColor; check.FlatAppearance.BorderColor = Color.FromArgb(244, 178, 104);
+            check.CheckedChanged += (_, _) =>
+            {
+                if (changing) return;
+                changing = true;
+                try
+                {
+                    if (id == 0 && check.Checked) foreach (var other in checks.Where(other => other != check)) other.Checked = false;
+                    else if (id != 0 && check.Checked) checks.FirstOrDefault(other => Equals(other.Tag, 0))?.Checked = false;
+                    if (!checks.Any(other => other.Checked)) checks.First(other => Equals(other.Tag, 0)).Checked = true;
+                }
+                finally { changing = false; }
+            };
+            checks.Add(check); picker.Controls.Add(check);
+        }
+        return picker;
+    }
+    private static void SetMultiTagPicker(FlowLayoutPanel picker, IEnumerable<int> values)
+    {
+        var selected = values.ToHashSet(); if (selected.Count == 0) selected.Add(0);
+        foreach (var check in picker.Controls.OfType<CheckBox>()) check.Checked = check.Tag is int id && selected.Contains(id);
     }
     private bool SelectAndSaveCover(int gameId, string sourcePath)
     {
@@ -1198,7 +1354,7 @@ public sealed class MainForm : Form
     private ContextMenuStrip? SaveRootContext(int id)
     {
         var root = _store.Data.SaveRoots.Single(item => item.Id == id);
-        var menu = new ContextMenuStrip();
+        var menu = CreateDarkContextMenu();
         menu.Items.Add("Edit", null, (_, _) =>
         {
             var name = Prompt("Save root name", root.Name); if (name is null) return;
@@ -1232,7 +1388,7 @@ public sealed class MainForm : Form
     }
     private ContextMenuStrip? ButtonIconContext(int index)
     {
-        var item = ButtonIconCatalog[index]; var menu = new ContextMenuStrip();
+        var item = ButtonIconCatalog[index]; var menu = CreateDarkContextMenu();
         menu.Items.Add("Edit", null, (_, _) =>
         {
             _store.Data.Settings.ButtonIcons.TryGetValue(item.Key, out var current);
@@ -1244,6 +1400,42 @@ public sealed class MainForm : Form
             _store.Data.Settings.ButtonIcons[item.Key] = vector; _store.Save(); ShowGlobal();
         });
         if (_store.Data.Settings.ButtonIcons.ContainsKey(item.Key)) menu.Items.Add("Restore glyph", null, (_, _) => { _store.Data.Settings.ButtonIcons.Remove(item.Key); _store.Save(); ShowGlobal(); });
+        return menu;
+    }
+    private sealed class DarkContextColorTable : ProfessionalColorTable
+    {
+        private static readonly Color Background = Color.FromArgb(25, 27, 28);
+        private static readonly Color Highlight = Color.FromArgb(52, 84, 84);
+        public override Color ToolStripDropDownBackground => Background;
+        public override Color ImageMarginGradientBegin => Background;
+        public override Color ImageMarginGradientMiddle => Background;
+        public override Color ImageMarginGradientEnd => Background;
+        public override Color MenuItemSelected => Highlight;
+        public override Color MenuItemSelectedGradientBegin => Highlight;
+        public override Color MenuItemSelectedGradientEnd => Highlight;
+        public override Color MenuItemBorder => Color.FromArgb(181, 228, 245);
+    }
+    private ContextMenuStrip CreateDarkContextMenu()
+    {
+        var menu = new ContextMenuStrip
+        {
+            ShowImageMargin = false,
+            ShowCheckMargin = false,
+            BackColor = Color.FromArgb(25, 27, 28),
+            ForeColor = Color.White,
+            Font = new Font(Font.FontFamily, S(16), FontStyle.Bold),
+            Padding = new Padding(S(6)),
+            Renderer = new ToolStripProfessionalRenderer(new DarkContextColorTable())
+        };
+        menu.ItemAdded += (_, args) =>
+        {
+            if (args.Item is null) return;
+            args.Item.AutoSize = false;
+            args.Item.Height = S(52);
+            args.Item.Padding = new Padding(S(18), S(6), S(18), S(6));
+            args.Item.ForeColor = Color.White;
+            args.Item.Font = menu.Font;
+        };
         return menu;
     }
     private Panel ElementTile(string text, bool add, Action click, ContextMenuStrip? context)
@@ -1269,7 +1461,7 @@ public sealed class MainForm : Form
     }
     private ContextMenuStrip? RegionContext(int id)
     {
-        var menu = new ContextMenuStrip(); menu.Items.Add("Edit", null, (_, _) => { var alias = Prompt("Region command alias", RegionAlias(id)); if (alias is null) return; var command = Prompt("Region command", _store.Data.RegionCommands[id]); if (command is not null) { try { _store.UpdateRegionCommand(id, alias, command); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } } });
+        var menu = CreateDarkContextMenu(); menu.Items.Add("Edit", null, (_, _) => { var alias = Prompt("Region command alias", RegionAlias(id)); if (alias is null) return; var command = Prompt("Region command", _store.Data.RegionCommands[id]); if (command is not null) { try { _store.UpdateRegionCommand(id, alias, command); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } } });
         menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) == DialogResult.Yes) { _store.DeleteRegionCommand(id); ShowGlobal(); } }); return menu;
     }
     private static bool TryParseRgb(string value, out string hex)
@@ -1323,7 +1515,7 @@ public sealed class MainForm : Form
     {
         var item = (kind == StatusKind.Play ? _store.Data.PlayStatuses : _store.Data.GameStatuses).Single(x => x.Id == id);
         var systemGameStatus = kind == StatusKind.Game && !string.IsNullOrWhiteSpace(item.SystemRole);
-        var menu = new ContextMenuStrip(); menu.Items.Add("Edit", null, (_, _) => { var name = Prompt("Status name", item.Name); if (name is null) return; var color = systemGameStatus ? item.Color : PromptRgb(item.Color); if (color is null) return; var icon = EditStatusIcon(item.IconVector, color); if (icon is null) return; try { _store.UpdateStatus(kind, id, name, color, icon); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } });
+        var menu = CreateDarkContextMenu(); menu.Items.Add("Edit", null, (_, _) => { var name = Prompt("Status name", item.Name); if (name is null) return; var color = systemGameStatus ? item.Color : PromptRgb(item.Color); if (color is null) return; var icon = EditStatusIcon(item.IconVector, color); if (icon is null) return; try { _store.UpdateStatus(kind, id, name, color, icon); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } });
         if (kind == StatusKind.Play)
         {
             var index = _store.Data.PlayStatuses.FindIndex(status => status.Id == id);
@@ -1335,20 +1527,28 @@ public sealed class MainForm : Form
     }
     private Control TagVectorSection()
     {
-        var sectionHeight = S(95) + (_store.Data.TagSchema.Count + 1) * S(154);
+        var sectionHeight = S(132) + (_store.Data.TagSchema.Count + 1) * S(154);
         var section = new Panel { Width = Math.Max(860, _content.ClientSize.Width - 100), Height = sectionHeight, Margin = new Padding(0, 0, 0, S(32)), BackColor = Color.FromArgb(35, 38, 39) };
-        section.Controls.Add(new Label { Text = _t["Dimensions"], Left = S(22), Top = S(16), Width = section.Width - S(44), Height = S(40), Font = new Font(Font.FontFamily, S(21), FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black });
-        var rows = new FlowLayoutPanel { Left = S(22), Top = S(75), Width = section.Width - S(44), Height = section.Height - S(83), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = false, Padding = new Padding(S(8)), BackColor = section.BackColor };
+        section.Controls.Add(new Label { Text = _t["Dimensions"] + " (single / multi-select)", Left = S(22), Top = S(16), Width = section.Width - S(44), Height = S(40), Font = new Font(Font.FontFamily, S(21), FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black });
+        section.Controls.Add(new Label { Text = "Right-click a dimension to rename, change its selection type, or delete it. Left-click a value to edit it.", Left = S(24), Top = S(58), Width = section.Width - S(48), Height = S(28), Font = new Font(Font.FontFamily, S(12), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) });
+        var rows = new FlowLayoutPanel { Left = S(22), Top = S(105), Width = section.Width - S(44), Height = section.Height - S(113), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = false, Padding = new Padding(S(8)), BackColor = section.BackColor };
         foreach (var dimension in _store.Data.TagSchema)
         {
             var row = new FlowLayoutPanel { Width = rows.Width - S(36), Height = S(154), WrapContents = false, AutoScroll = true, Padding = new Padding(0, 0, 0, S(6)) };
-            row.Controls.Add(ElementTile(dimension.Name, false, () => { }, DimensionContext(dimension.DimensionId)));
+            row.Controls.Add(ElementTile(dimension.Name + (dimension.IsMultiSelect ? " (multi)" : ""), false, () => { }, DimensionContext(dimension.DimensionId)));
             foreach (var value in dimension.Values.OrderBy(x => x.Key)) row.Controls.Add(ElementTile(value.Value, false, () => { if (value.Key != 0) EditTagValue(dimension.DimensionId, value.Key); }, ValueContext(dimension.DimensionId, value.Key)));
             row.Controls.Add(ElementTile("＋", true, () => AddValueTile(dimension.DimensionId), null)); rows.Controls.Add(row); EnableWheelScroll(row);
         }
         rows.Controls.Add(ElementTile("＋", true, AddDimensionTile, null)); section.Controls.Add(rows); EnableWheelScroll(rows); return section;
     }
-    private void AddDimensionTile() { var name = Prompt("Dimension name"); if (name is not null) { try { _store.AddDimension(name); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }
+    private void AddDimensionTile()
+    {
+        var name = Prompt("Dimension name"); if (name is null) return;
+        var type = Prompt("Dimension type: single or multi", "single"); if (type is null) return;
+        var multi = type.Trim().Equals("multi", StringComparison.OrdinalIgnoreCase);
+        if (!multi && !type.Trim().Equals("single", StringComparison.OrdinalIgnoreCase)) { MessageBox.Show("Dimension type must be single or multi."); return; }
+        try { _store.AddDimension(name, multi); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); }
+    }
     private void AddValueTile(int dimensionId) { var name = Prompt("Value display text"); if (name is not null) { try { _store.AddTagValue(dimensionId, name); ShowGlobal(); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }
     private void EditTagValue(int dimensionId, int value)
     {
@@ -1357,14 +1557,15 @@ public sealed class MainForm : Form
     }
     private ContextMenuStrip DimensionContext(int id)
     {
-        var dimension = _store.Data.TagSchema.Single(x => x.DimensionId == id); var menu = new ContextMenuStrip();
+        var dimension = _store.Data.TagSchema.Single(x => x.DimensionId == id); var menu = CreateDarkContextMenu();
         menu.Items.Add("Rename", null, (_, _) => { var name = Prompt("Dimension name", dimension.Name); if (name is not null) { _store.RenameDimension(id, name); ShowGlobal(); } });
-        menu.Items.Add("Delete", null, (_, _) => { var affected = _store.Data.Games.Count(g => g.Tags.ElementAtOrDefault(_store.Data.TagSchema.FindIndex(d => d.DimensionId == id)) != 0); if (MessageBox.Show($"{_t["Confirm deletion"]}\nAffected games: {affected}", "GameShelf", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) { _store.DeleteDimension(id); ShowGlobal(); } }); return menu;
+        menu.Items.Add(dimension.IsMultiSelect ? "Change to single-select" : "Change to multi-select", null, (_, _) => { _store.SetDimensionMultiSelect(id, !dimension.IsMultiSelect); ShowGlobal(); });
+        menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) { _store.DeleteDimension(id); ShowGlobal(); } }); return menu;
     }
     private ContextMenuStrip? ValueContext(int dimensionId, int value)
     {
         if (value == 0) return null;
-        var dimension = _store.Data.TagSchema.Single(x => x.DimensionId == dimensionId); var menu = new ContextMenuStrip();
+        var dimension = _store.Data.TagSchema.Single(x => x.DimensionId == dimensionId); var menu = CreateDarkContextMenu();
         menu.Items.Add("Edit", null, (_, _) => { var text = Prompt("Value display text", dimension.Values[value]); if (text is not null) { _store.SetTagValue(dimensionId, value, text); ShowGlobal(); } });
         menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) == DialogResult.Yes) { _store.DeleteTagValue(dimensionId, value); ShowGlobal(); } }); return menu;
     }
@@ -1427,12 +1628,17 @@ public sealed class MainForm : Form
             foreach (var dim in manifest.Dimensions)
             {
                 var target = _store.Data.TagSchema.FirstOrDefault(x => x.Name == dim.Name); // UI confirmation, never creates a definition
-                if (target is not null && target.Values.ContainsKey(dim.GameValue) && MessageBox.Show($"Map imported tag {dim.Name} = {dim.GameValue} {dim.Values.GetValueOrDefault(dim.GameValue)} to same named local dimension?", "Import mapping", MessageBoxButtons.YesNo) == DialogResult.Yes) mappings[dim.SourceDimensionId] = (target.DimensionId, dim.GameValue);
+                IEnumerable<int> sourceValues = dim.IsMultiSelect ? dim.GameValues : [dim.GameValue];
+                if (target is not null)
+                {
+                    var compatible = sourceValues.Where(target.Values.ContainsKey).ToList();
+                    if (compatible.Count > 0 && MessageBox.Show($"Map imported tag dimension '{dim.Name}' to the same named local dimension?", "Import mapping", MessageBoxButtons.YesNo) == DialogResult.Yes)
+                        mappings[dim.SourceDimensionId] = (target.DimensionId, compatible[0]);
+                }
             }
             var play = ChooseStatus(_store.Data.PlayStatuses, "Choose local play-status ID (or cancel for default)", Defaults.PlayDefaultId);
-            var state = ChooseStatus(_store.Data.GameStatuses, "Choose local game-status ID (or cancel for default)", Defaults.GameDefaultId);
             var region = ChooseRegion();
-            _packages.Import(d.FileName, manifest, mappings, play, state, region); MessageBox.Show("Imported. Paths were reset and need local selection."); ShowLibrary();
+            _packages.Import(d.FileName, manifest, mappings, play, region); MessageBox.Show("Imported. Paths were reset and need local selection."); ShowLibrary();
         }
         catch (Exception ex) { MessageBox.Show(ex.Message, "Import failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
