@@ -1,8 +1,14 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0a4` (alpha)
+**Current application patch:** `2.1.0a5` (alpha)
 
 ## Patch history
+
+### 2.1.0a5 (alpha)
+
+- Completed the fullscreen handoff correction. The launcher now defers both maximized and fullscreen restoration until it has confirmed it is the final selected executable, and it does not persist a transient non-fullscreen state while handing off. This addresses the remaining full-screen flash and title-bar/maximized result reported after 2.1.0a4.
+- Library multi-select display reserves one non-wrapping row per chosen dimension, preventing one dimension's overflow from hiding the following dimension.
+- Detail tag labels now explicitly insert display line breaks when their measured text exceeds the available chip width, ensuring both single- and multi-select strings are visible. Multi descriptions keep their common colon-aligned column.
 
 ### 2.1.0a4 (alpha)
 

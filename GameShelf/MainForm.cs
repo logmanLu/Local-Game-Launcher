@@ -48,6 +48,7 @@ public sealed class MainForm : Form
     private bool _nativeMenuBuilt;
     private bool _nativeMenuVisible;
     private bool _nativeMenuInLoop;
+    private bool _launcherHandoffInProgress;
 
     public MainForm(DataStore store)
     {
@@ -56,7 +57,7 @@ public sealed class MainForm : Form
         // Defer fullscreen until Load has established whether this executable is
         // the selected launcher version. Otherwise a fixed Launcher.exe can
         // briefly enter fullscreen before handing off to its versioned target.
-        RestoreWindow(restoreFullscreen: false); Controls.Add(_content); Controls.Add(_top); Controls.Add(_resizeMask); ApplyTheme();
+        RestoreWindow(restoreWindowState: false); Controls.Add(_content); Controls.Add(_top); Controls.Add(_resizeMask); ApplyTheme();
         _selectedId = store.Data.Settings.SelectedGameId;
         _management = false;
         if (_selectedId is not null && store.Data.Games.Any(game => game.Id == _selectedId) && store.Data.Settings.Page is "detail" or "edit") ShowDetail(); else { _selectedId = null; ShowLibrary(); }
@@ -68,7 +69,7 @@ public sealed class MainForm : Form
         Load += (_, _) =>
         {
             if (ApplyLauncherSelection()) return;
-            if (_store.Data.Settings.IsFullscreen) ToggleFullscreen();
+            RestorePersistedWindowState();
         };
         Shown += (_, _) =>
         {
@@ -87,13 +88,17 @@ public sealed class MainForm : Form
         _processTracker.Start();
     }
 
-    private void RestoreWindow(bool restoreFullscreen = true)
+    private void RestoreWindow(bool restoreWindowState = true)
     {
         var s = _store.Data.Settings;
         var screen = Screen.AllScreens.FirstOrDefault(x => x.WorkingArea.IntersectsWith(new Rectangle(s.WindowX, s.WindowY, s.WindowWidth, s.WindowHeight)));
         Bounds = screen is null ? new Rectangle((Screen.PrimaryScreen!.WorkingArea.Width - 1280) / 2, (Screen.PrimaryScreen.WorkingArea.Height - 720) / 2, 1280, 720) : new Rectangle(s.WindowX, s.WindowY, s.WindowWidth, s.WindowHeight);
-        if (s.IsMaximized) WindowState = FormWindowState.Maximized;
-        if (restoreFullscreen && s.IsFullscreen) ToggleFullscreen();
+        if (restoreWindowState) RestorePersistedWindowState();
+    }
+    private void RestorePersistedWindowState()
+    {
+        if (_store.Data.Settings.IsFullscreen) ToggleFullscreen();
+        else if (_store.Data.Settings.IsMaximized) WindowState = FormWindowState.Maximized;
     }
 
     /// <summary>
@@ -281,6 +286,7 @@ public sealed class MainForm : Form
         {
             AppLog.Information("UI", $"Restarting GameShelf with {reason}: '{launcher}'.");
             Process.Start(new ProcessStartInfo(launcher) { WorkingDirectory = _store.Paths.Root, UseShellExecute = true });
+            _launcherHandoffInProgress = true;
             Close();
             return true;
         }
@@ -299,6 +305,11 @@ public sealed class MainForm : Form
 
     private void PersistWindow()
     {
+        if (_launcherHandoffInProgress)
+        {
+            AppLog.Debug("UI", "Skipping window-state persistence during launcher handoff.");
+            return;
+        }
         var b = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
         var s = _store.Data.Settings; s.WindowX = b.X; s.WindowY = b.Y; s.WindowWidth = b.Width; s.WindowHeight = b.Height; s.IsMaximized = WindowState == FormWindowState.Maximized; s.IsFullscreen = _fullScreen; s.Page = _page; s.SelectedGameId = _selectedId;
         _store.Save();
@@ -855,7 +866,7 @@ public sealed class MainForm : Form
         foreach (var multiDimension in HomeMultiDisplayDimensions())
         {
             var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == multiDimension.DimensionId);
-            var row = new FlowLayoutPanel { Left = 0, Top = multiRowTop, Width = multiTags.Width, Height = S(60), AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
+            var row = new FlowLayoutPanel { Left = 0, Top = multiRowTop, Width = multiTags.Width, Height = S(60), AutoScroll = true, WrapContents = false, BackColor = baseColor, Padding = Padding.Empty };
             foreach (var value in game.MultiTags.ElementAtOrDefault(index) ?? [])
             {
                 var text = multiDimension.Values.GetValueOrDefault(value) ?? "";
@@ -1117,12 +1128,30 @@ public sealed class MainForm : Form
     {
         var chip = FilterChip(text, color);
         chip.Margin = Padding.Empty;
-        chip.AutoSize = false;
         var natural = TextRenderer.MeasureText(text, chip.Font).Width + S(18);
-        chip.Width = Math.Min(maximumWidth, natural);
-        var size = TextRenderer.MeasureText(text, chip.Font, new Size(Math.Max(S(20), chip.Width - S(18)), int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
+        var width = Math.Min(maximumWidth, natural);
+        chip.Text = WrapDetailChipText(text, chip.Font, Math.Max(S(20), width - S(18)));
+        chip.AutoSize = false;
+        chip.AutoEllipsis = false;
+        chip.Width = width;
+        var size = TextRenderer.MeasureText(chip.Text, chip.Font, new Size(Math.Max(S(20), width - S(18)), int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
         chip.Height = Math.Max(S(34), size.Height + S(10));
         return chip;
+    }
+    private static string WrapDetailChipText(string text, Font font, int maximumTextWidth)
+    {
+        var result = new System.Text.StringBuilder(); var line = new System.Text.StringBuilder();
+        foreach (var character in text)
+        {
+            if (character == '\n') { result.Append(line).AppendLine(); line.Clear(); continue; }
+            var candidate = line.ToString() + character;
+            if (line.Length > 0 && TextRenderer.MeasureText(candidate, font).Width > maximumTextWidth)
+            {
+                result.Append(line).AppendLine(); line.Clear();
+            }
+            line.Append(character);
+        }
+        return result.Append(line).ToString();
     }
     private Panel BuildGreedyTagRow(IEnumerable<Label> chips, int width)
     {
@@ -1139,7 +1168,7 @@ public sealed class MainForm : Form
     private Panel BuildMultiTagRow(string dimensionName, IEnumerable<string> values, int width, int descriptionWidth)
     {
         var row = new Panel { Width = width, BackColor = Color.Transparent };
-        var description = DetailTagChip(dimensionName + " :", MultiTagColor);
+        var description = DetailTagChip(dimensionName + " :", MultiTagColor, descriptionWidth);
         description.Width = descriptionWidth;
         description.TextAlign = ContentAlignment.MiddleRight;
         description.Location = Point.Empty; row.Controls.Add(description);
