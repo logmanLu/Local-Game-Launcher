@@ -93,14 +93,14 @@ public static class AppLog
 #if DEBUG
         return LogLevel.Debug;
 #else
-        // Alpha packages intentionally retain Debug diagnostics even when they are
+        // Alpha/beta packages intentionally retain Debug diagnostics even when
         // published with the Release compiler configuration. Stable versions use
         // the quieter Information threshold.
         var informationalVersion = typeof(AppLog).Assembly
             .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
             .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
             .FirstOrDefault()?.InformationalVersion ?? "";
-        return informationalVersion.Contains("a", StringComparison.OrdinalIgnoreCase) ? LogLevel.Debug : LogLevel.Information;
+        return informationalVersion.Contains("a", StringComparison.OrdinalIgnoreCase) || informationalVersion.Contains("b", StringComparison.OrdinalIgnoreCase) ? LogLevel.Debug : LogLevel.Information;
 #endif
     }
 }

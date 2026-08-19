@@ -8,11 +8,13 @@ namespace GameShelf;
 
 public sealed class MainForm : Form
 {
-    private sealed record LauncherChoice(string Path, int Major, int Minor, int Patch, int? Alpha)
+    private sealed record LauncherChoice(string Path, int Major, int Minor, int Patch, string? Preview)
     {
-        public bool IsPreview => Alpha.HasValue;
+        public bool IsPreview => !string.IsNullOrWhiteSpace(Preview);
+        public int PreviewKindRank => Preview?.StartsWith("b", StringComparison.OrdinalIgnoreCase) == true ? 2 : 1;
+        public int PreviewRevision => int.TryParse(Preview?[1..], out var revision) ? revision : 0;
         public string MinorLabel => $"{Major}.{Minor}";
-        public string FullLabel => $"{Major}.{Minor}.{Patch}" + (Alpha is null ? "" : "a" + (Alpha.Value == 0 ? "" : Alpha.Value));
+        public string FullLabel => $"{Major}.{Minor}.{Patch}" + (Preview ?? "");
         // Stable releases are displayed only at major.minor granularity, but
         // selecting one pins the exact highest patch visible at that moment.
         // A later patch must never silently replace a user's explicit choice.
@@ -161,14 +163,12 @@ public sealed class MainForm : Form
 
     private static LauncherChoice? ParseLauncherChoice(string path)
     {
-        var match = Regex.Match(Path.GetFileNameWithoutExtension(path), @"^Launcher_(?<core>[0-9]+(?:_[0-9]+)*)(?<alpha>a[0-9]*)?$", RegexOptions.IgnoreCase);
+        var match = Regex.Match(Path.GetFileNameWithoutExtension(path), @"^Launcher_(?<core>[0-9]+(?:_[0-9]+)*)(?<preview>[ab][0-9]*)?$", RegexOptions.IgnoreCase);
         if (!match.Success) return null;
         var parts = match.Groups["core"].Value.Split('_').Select(int.Parse).ToArray();
         if (parts.Length > 3) return null;
-        var alpha = match.Groups["alpha"].Success
-            ? (int.TryParse(match.Groups["alpha"].Value[1..], out var value) ? value : 0)
-            : (int?)null;
-        return new LauncherChoice(path, parts[0], parts.ElementAtOrDefault(1), parts.ElementAtOrDefault(2), alpha);
+        var preview = match.Groups["preview"].Success ? match.Groups["preview"].Value.ToLowerInvariant() : null;
+        return new LauncherChoice(path, parts[0], parts.ElementAtOrDefault(1), parts.ElementAtOrDefault(2), preview);
     }
 
     private List<LauncherChoice> DiscoverLaunchers()
@@ -192,12 +192,12 @@ public sealed class MainForm : Form
     private static LauncherChoice? LatestStable(IEnumerable<LauncherChoice> candidates) => candidates
         .Where(item => !item.IsPreview).OrderByDescending(item => item.Major).ThenByDescending(item => item.Minor).ThenByDescending(item => item.Patch).FirstOrDefault();
 
-    private static LauncherChoice? EligibleLatestAlpha(IEnumerable<LauncherChoice> candidates, LauncherChoice? newestStable)
+    private static LauncherChoice? EligibleLatestPreview(IEnumerable<LauncherChoice> candidates, LauncherChoice? newestStable)
     {
-        var alpha = candidates.Where(item => item.IsPreview)
-            .OrderByDescending(item => item.Major).ThenByDescending(item => item.Minor).ThenByDescending(item => item.Patch).ThenByDescending(item => item.Alpha)
+        var preview = candidates.Where(item => item.IsPreview)
+            .OrderByDescending(item => item.Major).ThenByDescending(item => item.Minor).ThenByDescending(item => item.Patch).ThenByDescending(item => item.PreviewKindRank).ThenByDescending(item => item.PreviewRevision)
             .FirstOrDefault();
-        return alpha is not null && (newestStable is null || CompareCore(alpha, newestStable) > 0) ? alpha : null;
+        return preview is not null && (newestStable is null || CompareCore(preview, newestStable) > 0) ? preview : null;
     }
 
     private static List<LauncherChoice> VersionMenuLaunchers(IEnumerable<LauncherChoice> candidates)
@@ -207,8 +207,8 @@ public sealed class MainForm : Form
             .GroupBy(item => (item.Major, item.Minor))
             .Select(group => group.OrderByDescending(item => item.Patch).First())
             .OrderByDescending(item => item.Major).ThenByDescending(item => item.Minor).ToList();
-        var alpha = EligibleLatestAlpha(all, LatestStable(all));
-        if (alpha is not null) stable.Insert(0, alpha);
+        var preview = EligibleLatestPreview(all, LatestStable(all));
+        if (preview is not null) stable.Insert(0, preview);
         return stable;
     }
 
@@ -217,7 +217,7 @@ public sealed class MainForm : Form
         var all = candidates.ToList();
         var selection = _store.Data.Settings.LauncherSelection;
         if (selection == "auto-stable") return LatestStable(all);
-        if (selection == "auto-latest") return EligibleLatestAlpha(all, LatestStable(all)) ?? LatestStable(all);
+        if (selection == "auto-latest") return EligibleLatestPreview(all, LatestStable(all)) ?? LatestStable(all);
         return selection.StartsWith("exact:", StringComparison.Ordinal)
             ? all.FirstOrDefault(item => string.Equals(item.FullLabel, selection[6..], StringComparison.OrdinalIgnoreCase))
             : null;
@@ -851,7 +851,10 @@ public sealed class MainForm : Form
         // needs one. This keeps card bottoms aligned and protects large IDs.
         var idTop = S(278); var idHeight = Math.Max(S(38), TextRenderer.MeasureText("0123456789", cardIdFont).Height + S(4));
         var titleTop = idTop + idHeight; var titleHeight = Math.Max(S(64), TextRenderer.MeasureText("Ag\nAg", cardTitleFont).Height + S(8));
-        var singleHeight = S(60); var multiRowHeight = S(42); var multiHeight = multiRowHeight * 2 + S(6);
+        // Three displayed single-select dimensions may occupy two chip rows.
+        // Reserve both rows rather than showing a vertical scrollbar inside a
+        // card; all cards use this same height to retain a uniform grid.
+        var singleHeight = S(80); var multiRowHeight = S(42); var multiHeight = multiRowHeight * 2 + S(6);
         var singleTop = titleTop + titleHeight + S(3); var multiTop = singleTop + singleHeight + S(4); var cardHeight = multiTop + multiHeight + S(9);
         var card = new Panel { Width = cardWidth, Height = cardHeight, Margin = new Padding(S(16)), BorderStyle = BorderStyle.FixedSingle, AccessibleName = game.Title, BackColor = baseColor };
         var imageHeight = S(263); var imageWidth = imageHeight * 3 / 4; var rightLeft = S(9) + imageWidth + S(10); var rightWidth = cardWidth - rightLeft - S(9);
@@ -1135,7 +1138,10 @@ public sealed class MainForm : Form
     {
         var chip = FilterChip(text, color);
         chip.Margin = Padding.Empty;
-        var natural = TextRenderer.MeasureText(text, chip.Font).Width + S(18);
+        // Let the Label measure itself: TextRenderer alone underestimates some
+        // mixed CJK/Latin glyph runs after WinForms applies label padding and
+        // DPI text metrics, which was clipping the last characters.
+        var natural = chip.GetPreferredSize(Size.Empty).Width + S(4);
         // Detail chips deliberately remain single-line. The row layout moves a
         // whole chip to the next row if needed; it must not split its text.
         var width = natural;
@@ -1271,9 +1277,12 @@ public sealed class MainForm : Form
         var savePath = new TextBox { Text = draft.SavePath, ReadOnly = true, Width = 450 }; var savePick = CreateIconButton("▣", "Choose save file", (_, _) => { using var d = new OpenFileDialog(); if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }); var saveFolder = CreateIconButton("▤", "Choose save folder", (_, _) => { using var d = new FolderBrowserDialog(); if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.SelectedPath); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }); var savePanel = new FlowLayoutPanel(); savePanel.Controls.Add(savePath); savePanel.Controls.Add(savePick); savePanel.Controls.Add(saveFolder); Row("Save path (relative)", savePanel, () => savePath.Text = "");
         var regionChoices = _store.Data.RegionCommands.Keys.OrderBy(id => id).Select(id => new Selection<int>(id, RegionAlias(id))).ToList(); var region = ChoiceCombo(regionChoices, draft.RegionCommandId); Row("Region command", region, () => SelectChoice(region, 0));
         var multiTagPickers = new Dictionary<int, FlowLayoutPanel>();
-        for (var i = 0; i < _store.Data.TagSchema.Count; i++)
+        // Keep first-level selection controls in the same grouped order as
+        // global dimension management, while retaining each dimension's
+        // original schema index for the persisted Tags/MultiTags arrays.
+        foreach (var entry in _store.Data.TagSchema.Select((dimension, index) => (dimension, index)).OrderBy(entry => entry.dimension.IsMultiSelect ? 1 : 0))
         {
-            var pos = i; var dim = _store.Data.TagSchema[i];
+            var pos = entry.index; var dim = entry.dimension;
             if (dim.IsMultiSelect)
             {
                 var picker = MultiTagPicker(dim, draft.MultiTags.ElementAtOrDefault(pos) ?? [0]); multiTagPickers[pos] = picker;
@@ -1281,7 +1290,7 @@ public sealed class MainForm : Form
             }
             else
             {
-                var tag = ChoiceCombo(dim.Values.OrderBy(x => x.Key).Select(x => new Selection<int>(x.Key, x.Value)).ToList(), draft.Tags[i]); Row(dim.Name, tag, () => SelectChoice(tag, 0)); tag.Tag = pos;
+                var tag = ChoiceCombo(dim.Values.OrderBy(x => x.Key).Select(x => new Selection<int>(x.Key, x.Value)).ToList(), draft.Tags[pos]); Row(dim.Name, tag, () => SelectChoice(tag, 0)); tag.Tag = pos;
             }
         }
         var imageButton = CreateIconButton("▣", _t["Choose image"], (_, _) => { using var dialog = new OpenFileDialog { Filter = "Images (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg" }; if (dialog.ShowDialog() == DialogResult.OK) { try { _store.SetImage(draft.Id, dialog.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } } });
@@ -1526,6 +1535,11 @@ public sealed class MainForm : Form
             args.Item.Padding = new Padding(S(18), S(6), S(18), S(6));
             args.Item.ForeColor = Color.White;
             args.Item.Font = menu.Font;
+            // The menu itself has AutoSize disabled so it can keep the intended
+            // dark, wide presentation. Resize its height as actions are added;
+            // otherwise WinForms leaves a one-line drop-down and clips every
+            // item except the tiny scroll indicator.
+            menu.Height = menu.Items.Cast<ToolStripItem>().Sum(item => item.Height) + menu.Padding.Vertical + S(4);
         };
         return menu;
     }
@@ -1623,7 +1637,9 @@ public sealed class MainForm : Form
         section.Controls.Add(new Label { Text = _t["Dimensions"] + " (single / multi-select)", Left = S(22), Top = S(16), Width = section.Width - S(44), Height = S(40), Font = new Font(Font.FontFamily, S(21), FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black });
         section.Controls.Add(new Label { Text = "Right-click a dimension to rename, change its selection type, or delete it. Left-click a value to edit it.", Left = S(24), Top = S(58), Width = section.Width - S(48), Height = S(28), Font = new Font(Font.FontFamily, S(12), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) });
         var rows = new FlowLayoutPanel { Left = S(22), Top = S(105), Width = section.Width - S(44), Height = section.Height - S(113), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = false, Padding = new Padding(S(8)), BackColor = section.BackColor };
-        foreach (var dimension in _store.Data.TagSchema)
+        // Keep the two selection models in contiguous groups so a global
+        // editor scan never alternates single/multi/single rows.
+        foreach (var dimension in _store.Data.TagSchema.OrderBy(dimension => dimension.IsMultiSelect ? 1 : 0))
         {
             var row = new FlowLayoutPanel { Width = rows.Width - S(36), Height = S(154), WrapContents = false, AutoScroll = true, Padding = new Padding(0, 0, 0, S(6)) };
             row.Controls.Add(ElementTile(dimension.Name + (dimension.IsMultiSelect ? " (multi)" : ""), false, () => { }, DimensionContext(dimension.DimensionId)));

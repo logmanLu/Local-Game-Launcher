@@ -1,8 +1,14 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0a7` (alpha)
+**Current application patch:** `2.1.0b` (beta)
 
 ## Patch history
+
+### 2.1.0b (beta)
+
+- Promoted the 2.1.0 preview line to a GitHub beta prerelease for user testing. Beta builds retain the Debug diagnostic threshold and are recognized by the fixed Launcher's version-policy resolver as `Launcher_<version>b.exe`; where an alpha and beta share a core version, beta is the eligible latest preview.
+- Completed the post-a7 Library-card fixes without changing savedata: cards reserve a full two-line single-select chip strip, eliminating the internal vertical scrollbar when three selected dimensions span two lines. Card height remains uniform.
+- Completed tag/editor cleanup: detail chips use the WinForms preferred single-line width so mixed CJK/Latin tails are not clipped; whole chips move to a new row rather than wrapping inside a chip. Both global and first-level edit pages group all single-select dimensions before all multi-select dimensions, while preserving original schema indexes for saved values. Dark right-click menus now grow vertically for every action rather than collapsing into a one-line black strip.
 
 ### 2.1.0a7 (alpha)
 

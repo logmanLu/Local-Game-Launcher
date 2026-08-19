@@ -1,6 +1,6 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.1.0a7 (alpha)
+**Current application specification:** 2.1.0b (beta)
 **Savedata format:** v4
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
@@ -23,7 +23,7 @@ The compiled assembly name is `GameShelf.exe`. The distributable launcher conven
 
 - `Launcher.exe` is the fixed local launch target; a shortcut may point to it.
 - `Launcher_<version>.exe` is the versioned copy, for example `Launcher_2_0_1.exe`.
-- An alpha version has an `a` suffix. Alpha packages are Debug diagnostics builds; a version with no suffix is a stable Release package.
+- Alpha and beta versions have an `a` or `b` suffix. Both preview package types retain Debug diagnostics; a version with no suffix is a stable Release package.
 
 `AppContext.BaseDirectory` is the application root. The executable must remain beside its data folders:
 
@@ -90,9 +90,9 @@ The presentation is permanently dark; there is no day/night theme or runtime the
 GameShelf uses the normal native Windows title bar. Windows owns caption dragging, system menu, Snap layouts, resize borders and minimize/maximize/close controls. Directly below it is a native Windows menu bar:
 
 - The menu is collapsed by default and reveals when the pointer reaches the top reveal band. It retracts after the pointer leaves the menu area; this works in normal and F11 fullscreen windows.
-- **Version** (click or `Alt+V` after revealing the menu) stores one launch policy and restarts into its resolved executable. It offers **Automatically select latest version**, **Automatically select latest stable version**, each available stable *major.minor* series, and at most one alpha.
+- **Version** (click or `Alt+V` after revealing the menu) stores one launch policy and restarts into its resolved executable. It offers **Automatically select latest version**, **Automatically select latest stable version**, each available stable *major.minor* series, and at most one eligible preview (alpha or beta).
 - A stable series entry such as `2.0` resolves to the highest available stable patch in that series at the moment it is selected, for example `Launcher_2_0_1.exe`. The resulting exact patch is pinned, so even a later `2.0.2` does not replace it automatically.
-- An alpha is shown only when its core version is strictly newer than the highest available stable release. For example, `2.0.1a` is shown with `2.0.0`, but is hidden when stable `2.0.1` exists. Selecting an alpha pins that exact alpha version.
+- A preview is shown only when its core version is strictly newer than the highest available stable release. For example, `2.0.1a` is shown with `2.0.0`, but is hidden when stable `2.0.1` exists. When alpha and beta share a core version, beta wins. Selecting a preview pins that exact executable.
 - The persisted launcher policy is resolved during form loading, before the first paint. All persisted window-state restoration is deliberately deferred until that resolution succeeds in the final executable. The fixed `Launcher.exe` skips saving state while handing off, so it cannot overwrite a persisted fullscreen request or briefly enter fullscreen/maximized before the chosen version takes over.
 - **Language** (click or `Alt+L`) persists the chosen UI language and restarts the application.
 - The same native menu and reveal behaviour remain available in F11 fullscreen.
@@ -187,7 +187,7 @@ Launch resolves the stored relative game path against `RcRootPath`. A direct lau
 
 Logs are written to `log/gameshelf-YYYY-MM-DD.log` next to the executable. Files older than 30 days are removed at startup. Levels are `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, and `None`.
 
-- Alpha builds default to `Debug`.
+- Alpha and beta builds default to `Debug`.
 - Stable builds default to `Information`.
 - The `GAMESHELF_LOG_LEVEL` environment variable overrides the threshold for a diagnostic run.
 

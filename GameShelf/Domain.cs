@@ -26,7 +26,7 @@ public sealed class AppSettings
     public string Language { get; set; } = "en";
     /// <summary>
     /// Version-launch policy: auto-latest, auto-stable, or
-    /// exact:&lt;major.minor.patch[alpha]&gt;.
+    /// exact:&lt;major.minor.patch[alpha-or-beta]&gt;.
     /// </summary>
     public string LauncherSelection { get; set; } = "auto-latest";
     public string Page { get; set; } = "library";
