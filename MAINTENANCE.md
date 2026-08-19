@@ -1,8 +1,14 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0a5` (alpha)
+**Current application patch:** `2.1.0a6` (alpha)
 
 ## Patch history
+
+### 2.1.0a6 (alpha)
+
+- Reworked Library-card lower layout around measured content rather than a tall fixed reservation. The title now sits directly above the compact single-select strip, and each selected multi-select dimension receives exactly one compact, independent orange-chip row. A long first dimension scrolls inside its own row instead of taking the second dimension's row.
+- Strengthened detail tag sizing: after inserting required display line breaks, each purple/orange chip now explicitly measures that final rendered text (including padding) before assigning its height. This prevents truncation of dimension descriptions, colons and mapped values in narrow detail sections.
+- The version handoff safety from `2.1.0a5` remains in force: fixed `Launcher.exe` defers state restoration to the selected versioned executable and skips state persistence while handing off. A fixed launcher with an explicitly pinned version will intentionally continue to start that pinned file; run `Launcher_2_1_0a6.exe` directly or select **Automatically select latest version** to test this alpha.
 
 ### 2.1.0a5 (alpha)
 

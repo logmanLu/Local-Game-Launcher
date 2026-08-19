@@ -844,7 +844,15 @@ public sealed class MainForm : Form
     }
     private Control BuildGameCard(GameEntry game)
     {
-        var cardWidth = S(390); var cardHeight = S(620); var baseColor = Color.FromArgb(38, 42, 42);
+        var cardWidth = S(390); var baseColor = Color.FromArgb(38, 42, 42);
+        using var cardTitleFont = new Font(Font.FontFamily, S(20), FontStyle.Bold);
+        var titleMeasure = TextRenderer.MeasureText(DisplayTitle(game.Title), cardTitleFont, new Size(cardWidth - S(24), int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
+        // The lower portion is content-sized rather than a tall fixed canvas:
+        // title -> compact single tags -> exactly one compact row per selected
+        // multi dimension.  Keeping the rows independent prevents a long first
+        // multi dimension from consuming the second dimension's reservation.
+        var titleHeight = Math.Max(S(54), titleMeasure.Height + S(4)); var singleHeight = S(60); var multiRowHeight = S(42); var multiHeight = multiRowHeight * 2 + S(6);
+        var singleTop = S(310) + titleHeight + S(3); var multiTop = singleTop + singleHeight + S(4); var cardHeight = multiTop + multiHeight + S(9);
         var card = new Panel { Width = cardWidth, Height = cardHeight, Margin = new Padding(S(16)), BorderStyle = BorderStyle.FixedSingle, AccessibleName = game.Title, BackColor = baseColor };
         var imageHeight = S(263); var imageWidth = imageHeight * 3 / 4; var rightLeft = S(9) + imageWidth + S(10); var rightWidth = cardWidth - rightLeft - S(9);
         var image = new PictureBox { Left = S(9), Top = S(9), Width = imageWidth, Height = imageHeight, SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), Cursor = _management ? Cursors.Default : Cursors.Hand };
@@ -852,8 +860,7 @@ public sealed class MainForm : Form
         var playStatus = StatusBlock(StatusKind.Play, game.PlayStatusId, new Rectangle(rightLeft, S(9), rightWidth, statusHeight));
         var gameStatus = StatusBlock(StatusKind.Game, game.GameStatusId, new Rectangle(rightLeft, S(9) + statusHeight + statusGap, rightWidth, statusHeight));
         var id = new Label { Text = game.Id.ToString(), Left = S(12), Top = S(278), Width = cardWidth - S(24), Height = S(30), Font = new Font(Font.FontFamily, S(22), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
-        var multiHeight = S(128); var singleHeight = S(68); var multiTop = cardHeight - S(9) - multiHeight; var singleTop = multiTop - S(6) - singleHeight;
-        var title = new Label { Text = DisplayTitle(game.Title), Left = S(12), Top = S(310), Width = cardWidth - S(24), Height = singleTop - S(316), AutoEllipsis = true, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = Color.White };
+        var title = new Label { Text = DisplayTitle(game.Title), Left = S(12), Top = S(310), Width = cardWidth - S(24), Height = titleHeight, AutoEllipsis = true, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = Color.White };
         var singleTags = new FlowLayoutPanel { Left = S(9), Top = singleTop, Width = cardWidth - S(18), Height = singleHeight, AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
         foreach (var dimension in HomeDisplayDimensions())
         {
@@ -866,13 +873,13 @@ public sealed class MainForm : Form
         foreach (var multiDimension in HomeMultiDisplayDimensions())
         {
             var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == multiDimension.DimensionId);
-            var row = new FlowLayoutPanel { Left = 0, Top = multiRowTop, Width = multiTags.Width, Height = S(60), AutoScroll = true, WrapContents = false, BackColor = baseColor, Padding = Padding.Empty };
+            var row = new FlowLayoutPanel { Left = 0, Top = multiRowTop, Width = multiTags.Width, Height = multiRowHeight, AutoScroll = true, WrapContents = false, BackColor = baseColor, Padding = Padding.Empty };
             foreach (var value in game.MultiTags.ElementAtOrDefault(index) ?? [])
             {
                 var text = multiDimension.Values.GetValueOrDefault(value) ?? "";
                 if (!string.IsNullOrWhiteSpace(text)) row.Controls.Add(FilterChip(text, MultiTagColor));
             }
-            multiTags.Controls.Add(row); multiRowTop += S(64);
+            multiTags.Controls.Add(row); multiRowTop += multiRowHeight + S(6);
         }
         card.Controls.AddRange([image, playStatus, gameStatus, id, title, singleTags, multiTags]);
         if (_management)
@@ -1130,12 +1137,15 @@ public sealed class MainForm : Form
         chip.Margin = Padding.Empty;
         var natural = TextRenderer.MeasureText(text, chip.Font).Width + S(18);
         var width = Math.Min(maximumWidth, natural);
-        chip.Text = WrapDetailChipText(text, chip.Font, Math.Max(S(20), width - S(18)));
-        chip.AutoSize = false;
+        var textWidth = Math.Max(S(20), width - chip.Padding.Horizontal);
+        chip.Text = WrapDetailChipText(text, chip.Font, textWidth);
         chip.AutoEllipsis = false;
-        chip.Width = width;
-        var size = TextRenderer.MeasureText(chip.Text, chip.Font, new Size(Math.Max(S(20), width - S(18)), int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
-        chip.Height = Math.Max(S(34), size.Height + S(10));
+        chip.AutoSize = false;
+        // AutoSize labels can retain a stale preferred height after their text
+        // is replaced with inserted line breaks.  Measure the final display
+        // text explicitly, so a chip is always tall enough for every glyph.
+        var measured = TextRenderer.MeasureText(chip.Text, chip.Font, new Size(textWidth, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
+        chip.Size = new Size(width, Math.Max(S(34), measured.Height + chip.Padding.Vertical + S(2)));
         return chip;
     }
     private static string WrapDetailChipText(string text, Font font, int maximumTextWidth)
