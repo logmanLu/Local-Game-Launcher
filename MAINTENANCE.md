@@ -1,8 +1,15 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.0.1` (stable)
+**Current application patch:** `2.0.2a` (alpha)
 
 ## Patch history
+
+### 2.0.2a (alpha)
+
+- Moved automatic launcher-policy resolution from `Shown` to the pre-paint `Load` phase. The log-confirmed fixed-launcher hand-off still occurs when needed, but its temporary form is never displayed, eliminating the one-time startup flash.
+- The native Version/Language menu is now collapsed by default. Moving the pointer into the upper reveal band attaches and displays it; leaving the menu area retracts it. The same behaviour applies in F11 fullscreen without restoring a permanent bar.
+- Version selection is persisted as a launcher policy. **Automatically select latest version** resolves to the newest eligible alpha or newest stable release; **Automatically select latest stable version** ignores alphas. Selecting a stable `major.minor` entry resolves its latest patch once and pins that exact executable; selecting an alpha also pins its exact alpha executable.
+- The Version menu lists one stable entry per `major.minor` series, pointing to that series' highest stable patch. It lists an alpha only when the alpha's core version is newer than the latest stable core; a same-version stable release hides its alpha preview.
 
 ### 2.0.1 (stable)
 

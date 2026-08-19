@@ -8,7 +8,16 @@ namespace GameShelf;
 
 public sealed class MainForm : Form
 {
-    private sealed record LauncherChoice(string Path, string Label, bool IsPreview, string SortKey);
+    private sealed record LauncherChoice(string Path, int Major, int Minor, int Patch, int? Alpha)
+    {
+        public bool IsPreview => Alpha.HasValue;
+        public string MinorLabel => $"{Major}.{Minor}";
+        public string FullLabel => $"{Major}.{Minor}.{Patch}" + (Alpha is null ? "" : "a" + (Alpha.Value == 0 ? "" : Alpha.Value));
+        // Stable releases are displayed only at major.minor granularity, but
+        // selecting one pins the exact highest patch visible at that moment.
+        // A later patch must never silently replace a user's explicit choice.
+        public string Selection => "exact:" + FullLabel.ToLowerInvariant();
+    }
     private readonly DataStore _store;
     private readonly PackageService _packages;
     private readonly GameProcessTracker _processTracker;
@@ -30,10 +39,14 @@ public sealed class MainForm : Form
     private bool _suppressResizeLayout;
     private const int WmCommand = 0x0111;
     private const uint MfString = 0x0000, MfPopup = 0x0010, MfChecked = 0x0008;
-    private const int LauncherCommandBase = 0x7000, LanguageCommandBase = 0x7200;
+    private const int LauncherAutoLatestCommand = 0x7000, LauncherAutoStableCommand = 0x7001, LauncherCommandBase = 0x7010, LanguageCommandBase = 0x7200;
+    private const int WmEnterMenuLoop = 0x0211, WmExitMenuLoop = 0x0212;
     private readonly Dictionary<int, Action> _nativeMenuCommands = [];
+    private readonly System.Windows.Forms.Timer _nativeMenuHoverTimer = new() { Interval = 120 };
     private IntPtr _nativeMenu;
     private bool _nativeMenuBuilt;
+    private bool _nativeMenuVisible;
+    private bool _nativeMenuInLoop;
 
     public MainForm(DataStore store)
     {
@@ -43,10 +56,16 @@ public sealed class MainForm : Form
         _selectedId = store.Data.Settings.SelectedGameId;
         _management = false;
         if (_selectedId is not null && store.Data.Games.Any(game => game.Id == _selectedId) && store.Data.Settings.Page is "detail" or "edit") ShowDetail(); else { _selectedId = null; ShowLibrary(); }
-        KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => { DetachNativeMenu(); _processTracker.Dispose(); };
+        KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => { _nativeMenuHoverTimer.Stop(); _nativeMenuHoverTimer.Dispose(); DetachNativeMenu(); _processTracker.Dispose(); };
+        _nativeMenuHoverTimer.Tick += (_, _) => UpdateNativeMenuVisibility();
+        // Resolve a launcher policy before the first paint. Doing this from
+        // Shown made the fixed Launcher.exe briefly appear before it handed
+        // off to the selected versioned executable.
+        Load += (_, _) => { ApplyLauncherSelection(); };
         Shown += (_, _) =>
         {
-            if (!_fullScreen) BuildNativeMenu();
+            BuildNativeMenu();
+            _nativeMenuHoverTimer.Start();
             if (!_fullScreen) return;
             // RestoreWindow runs before the native form handle exists, so its
             // fullscreen transition cannot queue the usual post-transition refresh.
@@ -83,15 +102,14 @@ public sealed class MainForm : Form
         if (menu == IntPtr.Zero || launcherMenu == IntPtr.Zero || languageMenu == IntPtr.Zero) return;
         _nativeMenuCommands.Clear();
         var current = Path.GetFullPath(Application.ExecutablePath);
-        var candidates = Directory.EnumerateFiles(_store.Paths.Root, "Launcher_*.exe")
-            .Select(ParseLauncherChoice)
-            .OfType<LauncherChoice>()
-            .ToList();
-        // Keep every stable release, plus precisely one newest alpha build.
-        var launchers = candidates.Where(item => !item.IsPreview)
-            .OrderByDescending(item => item.SortKey, StringComparer.Ordinal)
-            .Concat(candidates.Where(item => item.IsPreview).OrderByDescending(item => item.SortKey, StringComparer.Ordinal).Take(1))
-            .ToList();
+        var candidates = DiscoverLaunchers();
+        var launchers = VersionMenuLaunchers(candidates);
+        var selectedPolicy = _store.Data.Settings.LauncherSelection;
+        AppendMenu(launcherMenu, MfString | (selectedPolicy == "auto-latest" ? MfChecked : 0), LauncherAutoLatestCommand, "Automatically select latest version");
+        _nativeMenuCommands[LauncherAutoLatestCommand] = () => SelectLauncherPolicy("auto-latest");
+        AppendMenu(launcherMenu, MfString | (selectedPolicy == "auto-stable" ? MfChecked : 0), LauncherAutoStableCommand, "Automatically select latest stable version");
+        _nativeMenuCommands[LauncherAutoStableCommand] = () => SelectLauncherPolicy("auto-stable");
+        AppendMenu(launcherMenu, 0x0800, 0, null);
         if (launchers.Count == 0)
         {
             AppendMenu(launcherMenu, MfString, 0, "No published versions found");
@@ -104,8 +122,9 @@ public sealed class MainForm : Form
                 var launcher = item.Path;
                 var isCurrent = string.Equals(Path.GetFullPath(launcher), current, StringComparison.OrdinalIgnoreCase);
                 var command = LauncherCommandBase + index;
-                AppendMenu(launcherMenu, MfString | (isCurrent ? MfChecked : 0), (nuint)command, isCurrent ? item.Label + " (current)" : item.Label);
-                _nativeMenuCommands[command] = () => RestartWithLauncher(launcher);
+                var display = item.IsPreview ? item.FullLabel : item.MinorLabel;
+                AppendMenu(launcherMenu, MfString | (selectedPolicy == item.Selection ? MfChecked : 0), (nuint)command, isCurrent ? display + " (running)" : display);
+                _nativeMenuCommands[command] = () => SelectLauncherPolicy(item.Selection);
             }
         }
 
@@ -120,37 +139,122 @@ public sealed class MainForm : Form
         }
         AppendMenu(menu, MfPopup, (nuint)launcherMenu, "&Version");
         AppendMenu(menu, MfPopup, (nuint)languageMenu, "&Language");
-        if (!SetMenu(Handle, menu)) { DestroyMenu(menu); return; }
         _nativeMenu = menu;
         _nativeMenuBuilt = true;
-        DrawMenuBar(Handle);
+        // The top menu is intentionally collapsed by default. It is attached
+        // only while the cursor is at the window's upper reveal band.
+        SetNativeMenuVisible(false);
     }
 
     private static LauncherChoice? ParseLauncherChoice(string path)
     {
         var match = Regex.Match(Path.GetFileNameWithoutExtension(path), @"^Launcher_(?<core>[0-9]+(?:_[0-9]+)*)(?<alpha>a[0-9]*)?$", RegexOptions.IgnoreCase);
         if (!match.Success) return null;
-        var preview = match.Groups["alpha"].Success;
-        var alphaNumber = preview && int.TryParse(match.Groups["alpha"].Value[1..], out var value) ? value : 0;
-        var numericKey = string.Join('.', match.Groups["core"].Value.Split('_').Select(part => int.Parse(part).ToString("D8")));
-        // The key is used only inside a matching version family; alpha sequence
-        // is sufficient to choose the newest test build of the highest version.
-        return new LauncherChoice(path, (match.Groups["core"].Value + match.Groups["alpha"].Value).Replace('_', '.'), preview, numericKey + $".{alphaNumber:D8}");
+        var parts = match.Groups["core"].Value.Split('_').Select(int.Parse).ToArray();
+        if (parts.Length > 3) return null;
+        var alpha = match.Groups["alpha"].Success
+            ? (int.TryParse(match.Groups["alpha"].Value[1..], out var value) ? value : 0)
+            : (int?)null;
+        return new LauncherChoice(path, parts[0], parts.ElementAtOrDefault(1), parts.ElementAtOrDefault(2), alpha);
     }
 
-    private void HideNativeMenu()
+    private List<LauncherChoice> DiscoverLaunchers()
     {
-        if (_nativeMenu == IntPtr.Zero || !IsHandleCreated) return;
-        SetMenu(Handle, IntPtr.Zero);
-        DrawMenuBar(Handle);
+        try
+        {
+            return Directory.EnumerateFiles(_store.Paths.Root, "Launcher_*.exe")
+                .Select(ParseLauncherChoice).OfType<LauncherChoice>().ToList();
+        }
+        catch (Exception ex) { AppLog.Warning("UI", "Could not enumerate versioned launchers.", ex); return []; }
     }
 
-    private void ShowNativeMenu()
+    private static int CompareCore(LauncherChoice left, LauncherChoice right)
     {
-        if (!_nativeMenuBuilt) { BuildNativeMenu(); return; }
-        if (!IsHandleCreated) return;
-        SetMenu(Handle, _nativeMenu);
-        DrawMenuBar(Handle);
+        var result = left.Major.CompareTo(right.Major);
+        if (result != 0) return result;
+        result = left.Minor.CompareTo(right.Minor);
+        return result != 0 ? result : left.Patch.CompareTo(right.Patch);
+    }
+
+    private static LauncherChoice? LatestStable(IEnumerable<LauncherChoice> candidates) => candidates
+        .Where(item => !item.IsPreview).OrderByDescending(item => item.Major).ThenByDescending(item => item.Minor).ThenByDescending(item => item.Patch).FirstOrDefault();
+
+    private static LauncherChoice? EligibleLatestAlpha(IEnumerable<LauncherChoice> candidates, LauncherChoice? newestStable)
+    {
+        var alpha = candidates.Where(item => item.IsPreview)
+            .OrderByDescending(item => item.Major).ThenByDescending(item => item.Minor).ThenByDescending(item => item.Patch).ThenByDescending(item => item.Alpha)
+            .FirstOrDefault();
+        return alpha is not null && (newestStable is null || CompareCore(alpha, newestStable) > 0) ? alpha : null;
+    }
+
+    private static List<LauncherChoice> VersionMenuLaunchers(IEnumerable<LauncherChoice> candidates)
+    {
+        var all = candidates.ToList();
+        var stable = all.Where(item => !item.IsPreview)
+            .GroupBy(item => (item.Major, item.Minor))
+            .Select(group => group.OrderByDescending(item => item.Patch).First())
+            .OrderByDescending(item => item.Major).ThenByDescending(item => item.Minor).ToList();
+        var alpha = EligibleLatestAlpha(all, LatestStable(all));
+        if (alpha is not null) stable.Insert(0, alpha);
+        return stable;
+    }
+
+    private LauncherChoice? ResolveLauncherSelection(IEnumerable<LauncherChoice> candidates)
+    {
+        var all = candidates.ToList();
+        var selection = _store.Data.Settings.LauncherSelection;
+        if (selection == "auto-stable") return LatestStable(all);
+        if (selection == "auto-latest") return EligibleLatestAlpha(all, LatestStable(all)) ?? LatestStable(all);
+        return selection.StartsWith("exact:", StringComparison.Ordinal)
+            ? all.FirstOrDefault(item => string.Equals(item.FullLabel, selection[6..], StringComparison.OrdinalIgnoreCase))
+            : null;
+    }
+
+    private bool ApplyLauncherSelection()
+    {
+        var target = ResolveLauncherSelection(DiscoverLaunchers());
+        return target is not null && RestartWithLauncher(target.Path, "configured version policy");
+    }
+
+    private void SelectLauncherPolicy(string selection)
+    {
+        _store.Data.Settings.LauncherSelection = selection;
+        _store.Save();
+        AppLog.Information("UI", $"Selected launcher policy '{selection}'.");
+        var target = ResolveLauncherSelection(DiscoverLaunchers());
+        if (target is not null && RestartWithLauncher(target.Path, "selected version policy")) return;
+        BeginInvoke((Action)(() => { if (!IsDisposed) RebuildNativeMenu(); }));
+    }
+
+    private void RebuildNativeMenu()
+    {
+        DetachNativeMenu();
+        _nativeMenuBuilt = false;
+        _nativeMenuVisible = false;
+        BuildNativeMenu();
+    }
+
+    private void UpdateNativeMenuVisibility()
+    {
+        if (!_nativeMenuBuilt || _nativeMenuInLoop || !IsHandleCreated || IsDisposed) return;
+        var cursor = Cursor.Position;
+        var inside = Bounds.Contains(cursor);
+        var revealHeight = _fullScreen ? 10 : SystemInformation.CaptionHeight + 10;
+        var keepHeight = _fullScreen ? SystemInformation.MenuHeight + 12 : SystemInformation.CaptionHeight + SystemInformation.MenuHeight + 12;
+        SetNativeMenuVisible(inside && cursor.Y <= Bounds.Top + (_nativeMenuVisible ? keepHeight : revealHeight));
+    }
+
+    private void SetNativeMenuVisible(bool visible)
+    {
+        if (_nativeMenu == IntPtr.Zero || !IsHandleCreated || _nativeMenuVisible == visible) return;
+        _suppressResizeLayout = true;
+        try
+        {
+            SetMenu(Handle, visible ? _nativeMenu : IntPtr.Zero);
+            DrawMenuBar(Handle);
+            _nativeMenuVisible = visible;
+        }
+        finally { _suppressResizeLayout = false; }
     }
 
     private void DetachNativeMenu()
@@ -159,18 +263,21 @@ public sealed class MainForm : Form
         if (IsHandleCreated) SetMenu(Handle, IntPtr.Zero);
         DestroyMenu(_nativeMenu);
         _nativeMenu = IntPtr.Zero;
+        _nativeMenuVisible = false;
     }
 
-    private void RestartWithLauncher(string launcher)
+    private bool RestartWithLauncher(string launcher, string reason)
     {
-        if (string.Equals(Path.GetFullPath(launcher), Path.GetFullPath(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase)) return;
+        if (string.Equals(Path.GetFullPath(launcher), Path.GetFullPath(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase)) return false;
         try
         {
-            AppLog.Information("UI", $"Restarting GameShelf with selected launcher '{launcher}'.");
+            AppLog.Information("UI", $"Restarting GameShelf with {reason}: '{launcher}'.");
             Process.Start(new ProcessStartInfo(launcher) { WorkingDirectory = _store.Paths.Root, UseShellExecute = true });
             Close();
+            return true;
         }
         catch (Exception ex) { AppLog.Error("UI", "Could not restart with the selected launcher.", ex); MessageBox.Show("Could not restart with the selected launcher. See the log for details."); }
+        return false;
     }
 
     private void ChangeUiLanguage(string language)
@@ -214,7 +321,7 @@ public sealed class MainForm : Form
                 // Set this first so native messages produced by the transition are
                 // consistently treated as fullscreen messages.
                 _fullScreen = true;
-                HideNativeMenu();
+                SetNativeMenuVisible(false);
                 FormBorderStyle = FormBorderStyle.None;
                 WindowState = FormWindowState.Maximized;
             }
@@ -224,7 +331,7 @@ public sealed class MainForm : Form
                 FormBorderStyle = _restoreBorderStyle;
                 Bounds = _restoreBounds;
                 _fullScreen = false;
-                ShowNativeMenu();
+                SetNativeMenuVisible(false);
             }
         }
         finally { _suppressResizeLayout = false; }
@@ -254,6 +361,12 @@ public sealed class MainForm : Form
     protected override void WndProc(ref Message m)
     {
         const int WmSetCursor = 0x20, WmNcHitTest = 0x84, WmSizing = 0x214, HtClient = 1;
+        if (m.Msg == WmEnterMenuLoop) _nativeMenuInLoop = true;
+        if (m.Msg == WmExitMenuLoop)
+        {
+            _nativeMenuInLoop = false;
+            BeginInvoke((Action)(() => { if (!IsDisposed) UpdateNativeMenuVisibility(); }));
+        }
         if (m.Msg == WmCommand && _nativeMenuCommands.TryGetValue((int)((long)m.WParam & 0xffff), out var command))
         {
             command();

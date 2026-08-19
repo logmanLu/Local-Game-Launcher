@@ -1,243 +1,204 @@
-# Windows 遊戲管理 GUI：開發規格
+# GameShelf architecture specification
 
-## 1. 專案目標與交付物
+**Current application specification:** 2.0.2a (alpha)
+**Savedata format:** v2
+**Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
-開發一個可在 Windows 執行的免安裝遊戲管理 GUI。使用者可建立、查看、篩選、編輯、啟動及單獨匯入／匯出遊戲資料；並可集中管理標籤維度、轉區指令，以及遊戲的遊玩／安裝狀態。
+## 1. Product boundary and platform
 
-交付物：
+GameShelf is a local, single-user Windows game-library launcher. It stores game metadata, cover images, tags, paths, status definitions, button artwork, and UI state beside the executable. It does not require a server, account, cloud service, Steam integration, or Internet connection to run.
 
-- 單一免安裝 Windows `.exe`。不可要求安裝資料庫、執行環境或其他外部軟體。
-- 程式啟動位置旁必須使用 `savedata/` 儲存一切可變資料，包含資料庫、設定、圖片、匯出暫存以外的持久化資料。
-- 可將「程式本體 + 不含 `savedata/` 的檔案」搬移／匯出為乾淨程式；也可單獨匯出與匯入一個遊戲（含其圖片）。
-- 原始碼、建置說明與測試說明一併交付。（技術棧由 agent 選擇，但須能產生上述單一 exe。）
+The application is a .NET 10 Windows Forms application targeting 64-bit Windows:
 
-## 2. 基本原則
+- Target framework: `net10.0-windows`
+- Runtime: `win-x64`
+- Distribution: self-contained, single-file Windows executable
+- NuGet dependency: `System.Management` (used for optional Windows process diagnostics)
 
-### 2.1 語言與文字
+A target computer needs 64-bit Windows and write permission to the executable directory. A separately installed .NET runtime is not required by a published build.
 
-- 全程使用 Unicode，資料、檔名與 UI 均不得因英文、日文、繁體中文、簡體中文而損毀或截斷。
-- UI 必須內建英文、日文、繁體中文、簡體中文四種語系；首次啟動跟隨 Windows 顯示語言，若無相符語系則使用英文。
-- 語言選擇應提供於常駐且可到達的設定入口；選定後持久化。
-- 使用完整的語系資源檔／字串表，不得把使用者資料或介面文字硬編碼為單一語言。
+## 2. Deliverables and application root
 
-### 2.2 視窗與快捷鍵
+The compiled assembly name is `GameShelf.exe`. The distributable launcher convention is:
 
-| 情境 | 要求 |
+- `Launcher.exe` is the fixed local launch target; a shortcut may point to it.
+- `Launcher_<version>.exe` is the versioned copy, for example `Launcher_2_0_1.exe`.
+- An alpha version has an `a` suffix. Alpha packages are Debug diagnostics builds; a version with no suffix is a stable Release package.
+
+`AppContext.BaseDirectory` is the application root. The executable must remain beside its data folders:
+
+```text
+<application root>/
++-- Launcher.exe                         fixed local launcher (when distributed)
++-- Launcher_<version>.exe               versioned launcher(s)
++-- savedata/
+|   +-- gameshelf.json                    primary database
+|   +-- images/                           managed cover images
+|   +-- backups/                          automatic pre-migration backups
++-- log/
+    +-- gameshelf-YYYY-MM-DD.log          daily rolling diagnostics
+```
+
+The user-owned `savedata/` directory is never included in source-control or release assets. `SteamEmu/`, game folders, and game saves are external resources and are not managed application files.
+
+## 3. Main components
+
+| Component | Responsibility |
 | --- | --- |
-| 正常視窗 | 內容畫面維持 16:9；使用者可等比例調整大小，不可調成其他比例。 |
-| 最大化 | 必須支援；最大化時允許內容拉伸以填滿螢幕，不受 16:9 限制。 |
-| 全螢幕 | `F11` 切換全螢幕；全螢幕時允許內容拉伸以填滿螢幕。 |
-| 退出全螢幕 | `Esc` 退出全螢幕。 |
-| 最小化／關閉 | 必須支援最小化、`Alt+F4` 關閉。 |
-| 狀態保存 | 關閉時保存最後的視窗位置、尺寸、最大化狀態、全螢幕狀態、明暗模式、語言、目前頁面與篩選器狀態；下次開啟還原。若保存位置已不在可見螢幕，回退到預設置中位置。 |
+| `Program` | Initializes WinForms, paths and logging; owns top-level exception reporting and the `DataStore`/`MainForm` lifetime. |
+| `AppPaths` | Resolves the application-root, savedata, image, database and log locations. |
+| `AppLog` | Dependency-free daily rolling diagnostics. Logging failures never stop the launcher. |
+| `Domain` | Persistent DTOs, default statuses/save roots, and data-format version constants. |
+| `DataStore` | Loads, migrates, normalizes, validates and atomically writes `gameshelf.json`; all state changes pass through this layer. |
+| `MainForm` | Owns all pages, native menu integration, responsive layouts, navigation, input, edit dialogs and UI-state persistence. |
+| `ImageService` | Imports cover images, stores them under `savedata/images`, and supports the image crop workflow. |
+| `PackageService` (`ImportExport.cs`) | Exports/imports individual-game packages and reconciles imported schema entries. |
+| `GameProcessTracker` | Records launched process identities and performs bounded Windows/WMI child-process diagnostics. It does not drive a Stop-game UI. |
+| `Localizer` | Provides the four UI-language dictionaries. Game data remains Unicode and is not translated. |
+| `StatusIconVectors` / icon editor | Stores and renders white vector artwork over coloured button/status backgrounds. |
 
-> `Esc` 僅用於退出全螢幕；頁面返回一律使用 D 按鈕或 `F4`。`F4` 與 `Alt+F4` 不同：前者返回，後者仍關閉程式。
+## 4. Persistent data contract
 
-### 2.3 視覺與互動
+`savedata/gameshelf.json` serializes `AppData`. Its current `Version` is `2`.
 
-- 風格參考 Steam 的深藍／藍色調、層級、字體感與卡片互動，但不得直接使用 Steam 商標、素材或複製其專有 UI。
-- 支援明亮／黑夜模式。首次啟動跟隨系統；往後跟隨上一次使用者選擇。
-- 除本規格明示的文字、資料內容與可近用性需求外，按鈕一律用圖示表達，滑鼠懸停要有在地化文字提示（tooltip）。
-- 所有可互動控制項須可用鍵盤聚焦與操作，並為圖示按鈕提供可近用名稱。
-- 每個不可執行、刪除、匯入失敗或資料重設的動作，須給出清楚、在地化、可理解的原因／結果提示。
-
-## 3. 持久化與資料模型
-
-### 3.1 儲存策略
-
-- 儲存位置固定於程式同層的 `savedata/`。
-- 建議使用一個可攜式嵌入式資料庫或單一二進位／JSON 資料檔，圖片獨立保存於 `savedata/images/`。不得依賴使用者另行安裝的資料庫服務。
-- 所有寫入必須採用安全寫入策略（例如暫存檔寫入完成後原子替換，或資料庫交易），避免中斷導致資料庫毀損。
-- 啟動時驗證資料結構、修復可安全修復的參照，並以可讀方式記錄不可修復錯誤。
-- 遊戲資料應以「單一遊戲」為邏輯單位；實作可使用單一索引資料庫加上獨立圖片檔。刪除遊戲時，必須連同其資料與圖片完全移除，不能在 `savedata/` 留下孤兒資料。
-
-### 3.2 全域資料
-
-#### 轉區表（`regionCommands`）
-
-- 為稀疏、以非負整數索引的字串表；索引 `0` 固定為空字串，表示不需轉區，不能刪除或改為非空。
-- 非零索引可新增、編輯、刪除。刪除時索引不可遞補（例如刪除 `2` 後，`3` 仍為 `3`）。
-- 新增時預設使用尚未使用、且大於現有最大索引的下一個正整數，不主動回填已刪除索引。若該資料型別的最大正整數索引已用盡，允許使用者在新增流程中明確選取一個先前刪除而保留的索引重用；重用前須警示該索引曾被刪除，並確認目前沒有遊戲參照它。
-- 每筆字串是「轉區軟體路徑 + 參數」的命令前綴。啟動時將一個空格與已加雙引號的遊戲 exe 完整路徑附在其後：`<command-prefix> "<game-exe-path>"`。
-- 此命令無法在啟動前保證有效；必須以不阻塞 UI 的方式啟動並捕捉可取得的程序啟動錯誤，顯示在地化錯誤訊息。
-- 刪除索引 `N` 時，所有 `regionCommandId = N` 的遊戲改為 `0`；其他非零索引保持不變。
-
-#### 標籤架構（`tagSchema`）
-
-標籤是所有遊戲共用的、固定順序的高維度整數向量。每個維度獨立，絕不可合併、交換或省略。
-
-每個維度包含：
-
-| 欄位 | 規則 |
+| Area | Stored data |
 | --- | --- |
-| `dimensionId` | 穩定識別值；不可因 UI 排序而改變。 |
-| `name` | 此維度描述的事物，例如「發行商」、「遊戲引擎」。必填、Unicode。 |
-| `values` | 稀疏的 `nonNegativeInteger -> localized/unicode display string` 映射。`0` 固定為 `none` 的在地化顯示文字，不能刪除。 |
-| `gameValue` | 遊戲在此維度的非負整數值；必須是該維度目前存在的索引。 |
+| `Settings` | UI language, persisted launcher-version policy, last supported page and selected game, normal/fullscreen window state and bounds, filters, Library-card dimension choices, custom button vectors, and transient process identities. |
+| `RcRootPath` | Absolute path of the common `rc` game-resource root. |
+| `SaveRoots` | Named Windows path templates used as save roots. |
+| `RegionCommands` / `RegionAliases` | Region-launch commands and their short display aliases. |
+| `TagSchema` | Ordered dimensions, each with an integer ID and mapped display values. |
+| `PlayStatuses` / `GameStatuses` | Ordered status definitions: ID, display name, RGB/hex colour, white vector icon, default flag, and (for system game statuses) role. |
+| `Games` | Individual game records: ID, title, managed cover filename, note, relative game/save paths, selected save root, statuses, region command and one value per tag dimension. |
 
-規則：
+Every persistent DTO supports `JsonExtensionData`. Therefore unknown properties from a newer launcher are round-tripped rather than intentionally discarded. Older formats are backed up in `savedata/backups/` before in-place normalization. A newer savedata version is not downgraded.
 
-1. 新增維度時，要求輸入維度名稱；所有既有遊戲在新維度填入 `0`。
-2. 新增某維度的值時，要求輸入顯示文字；新增值預設取得大於現有最大索引的下一個未使用正整數，不得自動遞補舊洞。若正整數索引已達資料型別上限，允許使用者明確選取並重用該維度先前刪除的索引；不得靜默重用。
-3. 可編輯既有數字值對應的展示字串，數字索引不變。
-4. 刪除某一個非零值時，所有使用該值的遊戲在該維度改為 `0`；被刪除數字不可由後續值遞補。
-5. 刪除一個維度時，所有遊戲向量都刪除該位置。這是高影響操作，必須顯示受影響遊戲數量並二次確認。
-6. 遊戲的標籤向量長度必須永遠等於目前維度數量；每一維都必須映射到有效值，否則修正為 `0`。
+The legacy `GameEntry.SaveMethod` field is retained only so older data can be read; current UI and logic use `SaveRootId` and `SavePath`.
 
-#### 狀態定義
+### 4.1 Path rules
 
-存在兩個彼此獨立、全域共用的狀態清單：
+- `GamePath` is stored relative to `RcRootPath`. Selecting a game executable outside the configured `rc` root is rejected.
+- `SavePath` is stored relative to the selected `SaveRoot`.
+- A save root of `.` means the directory containing the resolved game executable.
+- Built-in portable save roots are `.` (Game directory), `%USERPROFILE%\\Documents`, and `%USERPROFILE%\\AppData`. Environment variables are expanded on the current computer, supporting a different Windows user profile.
+- Absolute legacy paths are readable for compatibility, but new selections are normalized to their corresponding relative form.
 
-| 類別 | 初始內建狀態 | 預設狀態 |
-| --- | --- | --- |
-| 遊玩狀態 | 綠色「還沒玩」、黃色「玩到一半」、藍色「已通關」 | 綠色「還沒玩」 |
-| 遊戲狀態 | 綠色「已安裝在本機上」、紅色「本機上沒有但他機上有」、紫色「資料已遺失」 | 紫色「資料已遺失」 |
+## 5. Permanent visual and window model
 
-- 在第四頁「第二層編輯模式」提供全域新增／刪除入口。新增狀態時必填「名稱」與「顏色」；既有狀態的名稱、顏色不可編輯。
-- 刪除狀態須二次確認；所有使用該狀態的遊戲改為該類別的預設狀態。
-- 預設狀態本身不得刪除，避免沒有回退值。內建狀態以預設名稱與顏色建立，但也遵循不可編輯規則。
+The presentation is permanently dark; there is no day/night theme or runtime theme selection. Standard UI languages are English (`en`), Traditional Chinese (`zh-Hant`), Simplified Chinese (`zh-Hans`) and Japanese (`ja`). All stored game text supports Unicode independently of the UI language.
 
-### 3.3 遊戲資料
+GameShelf uses the normal native Windows title bar. Windows owns caption dragging, system menu, Snap layouts, resize borders and minimize/maximize/close controls. Directly below it is a native Windows menu bar:
 
-每一遊戲由唯一、不連續、使用者指定且建立後不可更改的整數編號管理。建立時如編號已存在，拒絕建立並提示。
+- The menu is collapsed by default and reveals when the pointer reaches the top reveal band. It retracts after the pointer leaves the menu area; this works in normal and F11 fullscreen windows.
+- **Version** (click or `Alt+V` after revealing the menu) stores one launch policy and restarts into its resolved executable. It offers **Automatically select latest version**, **Automatically select latest stable version**, each available stable *major.minor* series, and at most one alpha.
+- A stable series entry such as `2.0` resolves to the highest available stable patch in that series at the moment it is selected, for example `Launcher_2_0_1.exe`. The resulting exact patch is pinned, so even a later `2.0.2` does not replace it automatically.
+- An alpha is shown only when its core version is strictly newer than the highest available stable release. For example, `2.0.1a` is shown with `2.0.0`, but is hidden when stable `2.0.1` exists. Selecting an alpha pins that exact alpha version.
+- The persisted launcher policy is resolved during form loading, before the first paint. A fixed `Launcher.exe` can therefore hand off to the chosen versioned executable without a visible start/close/start flash.
+- **Language** (click or `Alt+L`) persists the chosen UI language and restarts the application.
+- The same native menu and reveal behaviour remain available in F11 fullscreen.
 
-| 欄位 | 型別／限制 | 預設值 | 驗證與用途 |
-| --- | --- | --- | --- |
-| `id` | 唯一整數 | 無 | 建立時必填；之後不可改；作為管理與匯入衝突依據。 |
-| `title` | Unicode 字串，最多 50 字元 | `unknown` | 僅展示。字元計數須以使用者可見字元處理，避免 Unicode 組合字錯誤截斷。 |
-| `image` | PNG 或 JPEG；保存為應用管理的統一規格圖片檔 | 內建叉叉（missing）圖 | 僅展示；設定圖片時立即依統一輸出尺寸等比縮放、置中裁切並保存處理後版本；載入失敗回退到叉叉圖。 |
-| `note` | Unicode 字串，最多 150 字元 | `無` 的在地化等價顯示 | 僅展示。 |
-| `gamePath` | Windows 絕對路徑 | 空字串（未設定） | 必須是存在、可存取的 `.exe` 檔案；編輯完成與每次啟動時驗證，不合法則重設為空。可在有效時以 Explorer 開啟其所在資料夾。 |
-| `saveMethod` | Unicode 字串，最多 20 字元 | `無` 的在地化等價顯示 | 僅展示。 |
-| `savePath` | Windows 絕對路徑 | 空字串（未設定） | 必須存在且可存取；可為檔案或資料夾。編輯完成與每次啟動時驗證，不合法則重設為空。有效時用 Explorer 顯示此目標。 |
-| `playStatusId` | 遊玩狀態 ID | 綠色「還沒玩」 | 僅展示／切換。失效參照回退到遊玩預設。 |
-| `gameStatusId` | 遊戲狀態 ID | 紫色「資料已遺失」 | 啟動與修改路徑後執行自動規則（見下）。 |
-| `regionCommandId` | 非負整數索引 | `0` | 必須指向轉區表有效索引，否則回退 `0`。 |
-| `tags` | 與 `tagSchema` 等長的非負整數向量 | 各維均為 `0` | 每一值必須在對應維度存在，否則為 `0`。 |
+Normal resizing is constrained to 16:9 by the native `WM_SIZING` path, with a minimum size of 720 × 405. During an interactive resize, a dark presentation mask hides intermediate redraws; a single responsive layout refresh occurs when sizing ends. This avoids an animation/frame loop and the previous fullscreen redraw flicker.
 
-#### 路徑與遊戲狀態的自動規則
+All normal pages are scrollable where needed. Buttons use coloured rounded square/rectangle backgrounds and explanatory tooltips. If an action is unavailable on a page, its button is omitted and the remaining header controls close the gap.
 
-在每次應用啟動、每次完成 `gamePath`／`savePath` 編輯後執行：
+## 6. Navigation and persisted page state
 
-1. 驗證 `gamePath` 是存在的 `.exe`，以及 `savePath` 是存在的目標；無效值一律寫回空字串。
-2. 只要 `gamePath` 或 `savePath` 任一為空／無效，將遊戲狀態自動設為紅色「本機上沒有但他機上有」。
-3. 只有兩條路徑都有效時，才允許把遊戲狀態設為綠色「已安裝在本機上」。使用者可在編輯頁切換至任何存在的遊戲狀態；但若之後路徑失效，仍須自動覆寫為紅色。
-4. 「資料已遺失」為使用者可選的展示狀態；路徑失效時的強制狀態一律是紅色。
+| Input | Result |
+| --- | --- |
+| `F2` | Library / Home |
+| `F3` | Game management or global management, according to context |
+| `F4` | Back to Library or the preceding supported page |
+| `F11` | Toggle fullscreen |
+| `Esc` | Exit fullscreen |
+| `Alt+F4` | Close the launcher |
 
-## 4. 匯入／匯出
+The last page is persisted only for Library and game detail. If the launcher is closed on detail, it reopens on that game detail; closing while in first-level edit reopens at that game detail instead. Other management pages reopen at Library to avoid restoring incomplete edit state.
 
-### 4.1 格式與範圍
+## 7. Library / Home
 
-- 提供單一遊戲的匯出與匯入 UI；建議使用應用自訂副檔名的 ZIP 封裝，內容至少含版本化 `manifest.json`、遊戲資料與圖片原檔。不得把本機絕對路徑以可直接使用的形式帶到另一台機器；匯出可保留其原值供資訊展示，但匯入後必須視為未驗證並按第 3.3 節驗證／重設。
-- 匯出包須含該遊戲使用之標籤維度及值的名稱資訊，作為匯入對應用途；不可自行覆蓋本機標籤架構。
-- 匯出包也應含遊戲狀態、遊玩狀態與轉區命令的展示資訊，便於使用者理解差異；狀態與轉區命令的本機參照不得在匯入時靜默猜測。
+Library shows responsive game cards. In normal mode, only a left click opens a game detail page. In game-management mode, right-clicking a card performs the management context action, including deletion; cards do not open games in that mode.
 
-### 4.2 匯入流程
+Each card contains a portrait 3:4 cover, number, title (up to two lines), administrator-selected tag chips, and two status lamps. The card uses up to three chosen tag dimensions for display, while filtering always considers every dimension.
 
-1. 驗證封裝與版本；毀損、惡意路徑、缺少圖片或不支援版本時拒絕並提示原因。
-2. 若匯入遊戲的 `id` 已存在，本次匯入一律拒絕，不得覆蓋或建立副本。
-3. 拒絕時顯示「本機（少的）」與「匯入檔（多的）」的可比較欄位差異，至少包含 ID、標題、備註、圖片是否存在、路徑欄位、狀態、轉區命令、每個標籤維度／值。
-4. 若 ID 不衝突，進入逐項對應精靈：對匯入檔每個標籤維度，使用者選擇本機對應維度；對每個非零值選擇本機有效值。不可自動建立、合併、覆蓋或猜測標籤定義。使用者可將某一值對應為 `0`。
-5. 對轉區命令與兩類狀態，讓使用者選擇本機有效項目或該類預設值；不可新增全域項目。路徑於匯入後依驗證規則視為空值，直到使用者在本機重新選取。
-6. 使用者確認摘要後，以單一交易寫入遊戲及圖片；若任一寫入失敗，不得留下半完成遊戲。
+The rightmost header filter control opens a modal multi-select dimension filter:
 
-## 5. 全域常駐控制項
+- `none` values cannot be selected.
+- Multiple values within one dimension are ORed; different dimensions are ANDed.
+- Clear removes all conditions.
+- After applying, active selection chips appear immediately to the left of the filter control, right-aligned and wrapping when necessary.
 
-所有頁面與模式均顯示以下三個控制項：
+In Library management, the dimension selector chooses up to three displayed card dimensions. Its choice tiles measure to the dimension text rather than using fixed-size controls.
 
-| 代號 | 外觀／位置 | 快捷鍵 | 行為 |
-| --- | --- | --- | --- |
-| A | 右上角圓形；太陽＋月亮 | `F1` | 切換明亮／黑夜模式並持久化。 |
-| B | 左上角正方形；首頁圖示 | `F2` | 回到第一頁並切換為行動模式；若有未保存編輯，要求放棄或繼續編輯。 |
-| C | B 右方正方形；編輯圖示 | `F3` | 依頁面／模式而異，見第 6 節。不可用時顯示 disabled 狀態與 tooltip。 |
+## 8. Game detail page
 
-## 6. 頁面與模式
+Entering game detail always refreshes the selected game path state. The page is horizontally centred and consists of three equal-width stacked sections; no child may cross its invisible section boundary.
 
-預設開啟：第一頁、行動模式。
+1. **Section 1** — left **1A** is a 3:4 portrait cover; right **1B** contains number/Launch, title, and tags. `1B1` splits number and Launch evenly, and `1B1`, `1B2`, and `1B3` may grow to their content. The right side determines the section height; the cover follows that height at 3:4, is vertically aligned to it, and has a 480-pixel minimum where the available column permits.
+2. **Section 2** — note (**2A**) and play/game lamps (**2B**) split at the horizontal centre. The lamps appear side-by-side, retain their artwork aspect ratio, and match the note reservation height.
+3. **Section 3** — game path, save root, save path, region command and export action. Long paths wrap at Windows path separators instead of creating horizontal scrolling.
 
-### 6.1 第一頁：遊戲群
+Tag chips use one row per value and display `Dimension : mapped value`, including spaces around the colon. Their width measures to their complete text.
 
-#### 行動模式
+### 8.1 Path-derived state
 
-- 中央為可垂直捲動的遊戲矩陣。卡片顯示：圖片、標題、遊玩狀態、遊戲狀態、標籤前三個維度的「數字 + 映射文字」描述。
-- 欄／列數隨視窗尺寸響應調整；非最大化／非全螢幕時仍維持整體 16:9。無標籤維度的欄位留空；不足三維則僅顯示存在的維度。
-- 對遊戲圖片按滑鼠左鍵，進入第二頁、行動模式，並載入該遊戲。
-- 正上方提供篩選器：每一標籤維度各有下拉選單，可選「不篩選」或其中任一有效值。選項必須顯示數字及對應文字。多個維度同時啟用時採 AND 條件。
-- 按 C 進入本頁的遊戲管理模式。
+- A valid game executable forces the built-in green **Installed locally** game status.
+- If the game executable becomes invalid, only that green installed status changes to purple **Data missing**. Red **In other machine**, purple **Data missing**, and blue **Storaged** remain as chosen.
+- Save-path availability does not change the game status and does not enable or hide Launch.
+- Valid game/save paths are light green and clickable to open the resolved folder. Invalid paths are bright red and are not clickable.
+- Launch is shown only when the resolved game executable is valid. It is always the normal Launch icon; the Stop-game feature was intentionally removed.
 
-#### 遊戲管理模式
+The play-status lamp accepts a double click within 0.8 seconds to move to the next configured play status, cycling at the end. Status icon meanings come from the stored vectors; defaults include hollow/half/filled squares for play states and filled circle/hollow circle/cross/hollow cloud for game states.
 
-- C 不可用。
-- 提供新增遊戲：只要求輸入唯一整數 `id`；其他屬性均套用第 3.3 節預設值。成功後遊戲出現在矩陣中。
-- 提供完全刪除遊戲：先選擇遊戲，再顯示遊戲 ID／標題與「將永久移除資料和圖片」的二次確認。確認後刪除所有資料與圖片，並更新篩選結果。
-- 在此模式提供單一遊戲的匯入入口；匯出入口可由第二頁提供。
+## 9. Editing modes
 
-### 6.2 第二頁：單一遊戲展示（行動模式）
+### 9.1 First-level game edit
 
-- 頁面根據第一頁點選的遊戲載入資料。
-- 左上為圖片；圖片右側上半部顯示編號、下半部顯示標題；標題下方顯示所有標籤映射字串。
-- 編號右側放置橫向橢圓形綠色啟動按鈕，圖示為直立三角形。有效 `.exe` 路徑不存在／未設定時按鈕 disabled，且 tooltip／提示說明原因。
-- 啟動規則：
-  - `regionCommandId = 0`：以遊戲 exe 啟動。
-  - 非 `0`：執行 `<region-command> "<game-exe-path>"`。
-  - 命令啟動失敗時顯示可取得的轉區軟體／程序錯誤；程式不得當機。
-- 圖片下方左側顯示備註；右側顯示兩個較大的指示燈，分別為遊玩狀態與遊戲狀態，旁邊須有文字說明。
-- 再下方依序顯示遊戲路徑、存檔方式、存檔路徑。有效且非空的遊戲路徑可點擊後用 Windows Explorer 選取／顯示 exe 所在目錄；有效存檔路徑可點擊後用 Explorer 開啟（檔案時選取、資料夾時開啟）。
-- 右下顯示轉區表索引與對應命令摘要。
-- 提供此遊戲的匯出入口。
-- 按 C 進入第三頁、第一層編輯模式，且編輯目標為目前遊戲。
+First-level edit changes one game. It provides boxed interactive text controls for title, note, paths and selectable properties. Image and save/game path selection controls are placed below the normal properties in the scrollable page. Choosing a cover opens a crop/zoom surface before the managed image is saved.
 
-### 6.3 第三頁：單一遊戲第一層編輯模式
+The selected save root, region-command alias and tag values are shown as mapped text; persisted IDs remain internal. Play status is not set here because it is changed from the detail lamp.
 
-- C 進入第四頁、第二層編輯模式。
-- 左下提供 D：返回箭頭；按 D 或 `F4`，回第二頁、行動模式。若有未保存編輯，先要求確認。
-- 可編輯 `title`、`image`、`note`、`gamePath`、`saveMethod`、`savePath`、`playStatusId`、`gameStatusId`、`regionCommandId`、每一個標籤維度值；`id` 不可編輯。
-- 每個可編輯屬性提供「還原預設值」控制項。路徑重設為空字串；標籤重設為 `0`；狀態重設為各自預設；轉區命令重設為 `0`。
-- 路徑必須透過檔案／資料夾選擇器輸入，並在儲存時立即驗證。遊戲路徑僅接受存在的 `.exe`；存檔路徑僅接受存在目標。
-- 本頁只提供目前遊戲的遊玩／遊戲狀態選擇；全域狀態定義的新增／刪除在第四頁管理。
+### 9.2 Second-level global management
 
-### 6.4 第四頁：第二層編輯模式（全域屬性管理）
+Global management owns:
 
-- C 不可用。
-- D 或 `F4` 回到第三頁、第一層編輯模式。
-- 此頁不顯示任何遊戲清單或單一遊戲資料；只管理下列全域屬性：
-  - 標籤維度：新增、改名、刪除（刪除須警示受影響遊戲數與二次確認）。
-  - 維度值：新增、編輯展示文字、刪除（刪除後使用者遊戲值改 `0`，索引不遞補）。
-  - 轉區表：新增、編輯、刪除（刪除後使用該索引的遊戲改 `0`，索引不遞補）。
-  - 遊玩狀態與遊戲狀態定義：新增、刪除，規則見第 3.2 節。此處不得混淆為單一遊戲的狀態選擇。
-- 所有影響多個遊戲的操作顯示變更摘要與二次確認。
+- the `rc` root;
+- save-root names and Windows path templates;
+- region commands (full command plus required short alias);
+- play and game statuses, including RGB/hex colour and vector artwork;
+- play-status ordering through adjacent two-way swaps;
+- tag dimensions and mapped values;
+- the Library-card display-dimension selection; and
+- all logical action-button icons.
 
-## 7. 資料驗證、錯誤處理與安全性
+Property collections are tiles rather than a fixed list: simple properties use one tile per value plus an Add tile; tag dimensions are scrollable rows with an Add-value tile at the row end and an Add-dimension tile at the column end. Left click edits a value. Right click opens only the edit/delete context menu (it must not also open the edit dialog). Management sections shrink to their content height instead of claiming an entire viewport.
 
-- 載入圖片只接受 PNG／JPEG，限制合理的檔案大小與像素尺寸以防記憶體耗盡。使用者設定圖片時，即依全程一致的輸出尺寸將來源圖等比縮放、置中裁切、轉換為應用管理的格式並寫入 `savedata/images/`；原始圖片不另行保存。所有卡片與詳情頁僅使用此處理後圖片，顯示時可安全縮放但不得再次改變裁切內容。
-- 所有外部文字、檔案名稱與命令須妥善轉義；不得把遊戲標題等使用者輸入拼接為 shell 命令。
-- 向 Windows 啟動程序時應使用安全的程序 API 與引數分離機制；只有在為符合既定「命令前綴 + 空格 + quoted exe path」行為必要時，才使用受控的命令列字串。
-- 永不刪除使用者的遊戲 exe、存檔原始資料或任意系統檔案；「刪除遊戲」只刪除本應用於 `savedata/` 管理的資料與圖片。
-- 如果 `savedata/` 無法建立或寫入，程式必須顯示阻塞式錯誤並避免假裝已保存。
+The vector icon editor previews existing custom artwork or the logical built-in glyph when no custom vector is saved. It supports freehand line, straight line, hollow circle, hollow triangle, hollow rectangle, and Paint-style flood fill of an enclosed region. New geometry can be adjusted immediately after creation. Vectors render as white marks over the selected coloured background.
 
-## 8. 驗收案例
+## 10. Launching and process diagnostics
 
-1. 以繁中、簡中、英文、日文文字建立遊戲、備註、標籤與狀態，重啟後逐字保留。
-2. 建立 ID `101` 後再次建立 `101`，操作遭拒且資料不變。
-3. 任一有效路徑改為不存在後重啟，路徑清空且遊戲狀態為紅色。
-4. 新增標籤維度後，所有既有遊戲向量增加一個值 `0`；刪除維度後，每個向量正確移除該維。
-5. 刪除標籤值 `2` 後，使用 `2` 的遊戲變 `0`；其他值索引不遞補。
-6. 刪除轉區命令 `2` 後，使用 `2` 的遊戲改 `0`；命令 `3` 仍維持 `3`。
-7. 刪除自訂狀態後，使用它的遊戲正確回到該類預設狀態；嘗試刪除預設狀態會被禁止。
-8. 正常視窗的縮放固定為 16:9；最大化及 F11 會填滿／拉伸內容；F11 與 Esc 的全螢幕行為符合第 2.2 節，第三／四頁可用 F4 返回且 Alt+F4 仍可關閉程式。
-9. 有效 exe 的無轉區啟動成功；轉區命令啟動失敗時 UI 顯示錯誤且不當機；無效 exe 時啟動按鈕停用並說明原因。
-10. 匯出一個含圖片與標籤的遊戲後，在另一份資料集匯入，可逐項對應標籤；同 ID 匯入被拒絕並展示本機與匯入檔差異；失敗匯入不產生半完成資料。
-11. 完全刪除遊戲經二次確認後，`savedata/` 不再有該遊戲的資料或圖片；取消確認則資料不變。
-12. 將 exe 與空的 `savedata/` 搬移至新資料夾後可正常啟動並建立新資料。
-13. 將不同長寬比的 PNG／JPEG 設為遊戲圖片後，皆在設定時產生相同輸出尺寸、等比縮放且置中裁切的圖片；重啟與匯出／匯入後仍維持相同裁切。
-14. 在轉區表或標籤值的新增索引已達資料型別上限時，可由使用者明確選取已刪除的保留索引重用；一般新增不可自動回填保留索引。
+Launch resolves the stored relative game path against `RcRootPath`. A direct launch uses the game directory as working directory. A configured region command is invoked with the game executable as its final argument.
 
-## 9. 未指定但由實作採取的合理預設
+`GameProcessTracker` records a launched process ID and start time, then may observe/adopt an exact child executable for region-launcher workflows. WMI event monitoring and two bounded post-launch checks are diagnostics only. The persisted identity lets a restarted launcher inspect an already-running tracked process safely. Process tracking does not alter the current UI into a Stop action and must never cause a page-rebuild loop.
 
-- 「預設 Windows 路徑」統一解釋為空字串／未設定。
-- 存檔路徑可指向存在的檔案或資料夾；遊戲路徑僅接受存在的 `.exe`。
-- 刪除狀態時使用同類別預設狀態；預設狀態不可刪除。
-- 狀態可新增／刪除；名稱與顏色在建立後不可編輯。
-- D 返回快捷鍵為 `F4`；`Esc` 僅退出全螢幕。
-- 單一遊戲匯入的標籤採人工逐項對應，不自動合併全域標籤架構。
-- 最大化與全螢幕是維持 16:9 規則的明確例外，允許內容拉伸。
+## 11. Logging and reliability
+
+Logs are written to `log/gameshelf-YYYY-MM-DD.log` next to the executable. Files older than 30 days are removed at startup. Levels are `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, and `None`.
+
+- Alpha builds default to `Debug`.
+- Stable builds default to `Information`.
+- The `GAMESHELF_LOG_LEVEL` environment variable overrides the threshold for a diagnostic run.
+
+Unhandled UI, runtime and task exceptions are logged. Database writes use a temporary JSON file followed by replace, so a completed save is atomic. Before diagnosing any defect, inspect the relevant daily log first.
+
+## 12. Repository and release maintenance rule
+
+**Before every `git commit`, `git push`, PR update, merge, or release publication, review and update this `spec.md` so it matches the implementation.** Update `MAINTENANCE.md` with the patch-specific history and troubleshooting note as well.
+
+The normal workflow is:
+
+1. Work on a development branch.
+2. Update implementation, tests/checks, `spec.md`, and `MAINTENANCE.md` together.
+3. Commit and push the branch, then open/update a pull request to `main`.
+4. Build the requested package only after checking and terminating a prior `Launcher` process if necessary.
+5. Produce `Launcher.exe` first, then copy it to `Launcher_<version>.exe`.
+6. Merge only after the requested review/approval. Publish only when expressly requested; never include `savedata/` in source control or release assets.
