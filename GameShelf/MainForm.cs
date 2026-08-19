@@ -58,11 +58,14 @@ public sealed class MainForm : Form
         if (_selectedId is not null && store.Data.Games.Any(game => game.Id == _selectedId) && store.Data.Settings.Page is "detail" or "edit") ShowDetail(); else { _selectedId = null; ShowLibrary(); }
         KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => { _nativeMenuHoverTimer.Stop(); _nativeMenuHoverTimer.Dispose(); DetachNativeMenu(); _processTracker.Dispose(); };
         _nativeMenuHoverTimer.Tick += (_, _) => UpdateNativeMenuVisibility();
+        // Resolve a launcher policy before the first paint. Doing this from
+        // Shown made the fixed Launcher.exe briefly appear before it handed
+        // off to the selected versioned executable.
+        Load += (_, _) => { ApplyLauncherSelection(); };
         Shown += (_, _) =>
         {
             BuildNativeMenu();
             _nativeMenuHoverTimer.Start();
-            if (ApplyLauncherSelection()) return;
             if (!_fullScreen) return;
             // RestoreWindow runs before the native form handle exists, so its
             // fullscreen transition cannot queue the usual post-transition refresh.

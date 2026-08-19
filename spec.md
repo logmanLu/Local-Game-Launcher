@@ -93,6 +93,7 @@ GameShelf uses the normal native Windows title bar. Windows owns caption draggin
 - **Version** (click or `Alt+V` after revealing the menu) stores one launch policy and restarts into its resolved executable. It offers **Automatically select latest version**, **Automatically select latest stable version**, each available stable *major.minor* series, and at most one alpha.
 - A stable series entry such as `2.0` resolves to the highest available stable patch in that series at the moment it is selected, for example `Launcher_2_0_1.exe`. The resulting exact patch is pinned, so even a later `2.0.2` does not replace it automatically.
 - An alpha is shown only when its core version is strictly newer than the highest available stable release. For example, `2.0.1a` is shown with `2.0.0`, but is hidden when stable `2.0.1` exists. Selecting an alpha pins that exact alpha version.
+- The persisted launcher policy is resolved during form loading, before the first paint. A fixed `Launcher.exe` can therefore hand off to the chosen versioned executable without a visible start/close/start flash.
 - **Language** (click or `Alt+L`) persists the chosen UI language and restarts the application.
 - The same native menu and reveal behaviour remain available in F11 fullscreen.
 
