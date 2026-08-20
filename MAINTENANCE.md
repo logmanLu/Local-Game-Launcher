@@ -1,6 +1,14 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0b3` (beta)
+**Current application patch:** `2.1.0b4` (beta)
+### 2.1.0b4 (beta)
+
+- Diagnosed the repeated freeze from the application log: Windows Forms reported Win32 error **1158** (failure while creating a window handle) from `BuildTopCore`. The cause was repeated header/card rebuilds which removed controls without disposing their native handles, compounded by retained top-bar resize handlers.
+- Header and page control replacement now disposes old controls, removes obsolete top-bar resize handlers, releases owned Library cover bitmaps, and replaces old rounded-corner regions. This prevents the native-handle/GDI resource growth that led to the freeze.
+- The Library Home button is omitted while already on Library, and `F2` is inert there. This includes Library game-management mode, so a hidden Home action has no remaining keyboard path.
+- Entering or leaving Library management mode no longer reloads Library cards. Card click behaviour is evaluated from the current mode, preserving card instances and scroll position while still preventing launch in management mode and allowing right-click deletion there.
+- Vertical scrolling no longer forces a full content layout for every wheel tick. The Library/content flow surfaces are double-buffered and card creation is layout-batched, removing the visible card flashing and reducing wheel-scroll stalls.
+
 ### 2.1.0b1 (beta)
 ### 2.1.0b3 (beta)
 - Double-clicking a play-status or unavailable-game-status lamp now restores the current Game detail vertical scroll position after its page rebuild instead of jumping to the top.

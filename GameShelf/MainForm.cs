@@ -24,8 +24,9 @@ public sealed class MainForm : Form
     private readonly PackageService _packages;
     private readonly GameProcessTracker _processTracker;
     private Localizer _t;
-    private readonly FlowLayoutPanel _content = new() { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(42) };
+    private readonly BufferedFlowLayoutPanel _content = new() { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(42) };
     private readonly Panel _top = new() { Dock = DockStyle.Top, Height = 108 };
+    private readonly List<EventHandler> _topResizeHandlers = [];
     private int? _selectedId;
     private string _page = "library";
     private bool _management;
@@ -411,9 +412,9 @@ public sealed class MainForm : Form
 
     private void HandleKeys(object? sender, KeyEventArgs e)
     {
-        if (e.KeyCode == Keys.F2) { _management = false; ShowLibrary(); e.Handled = true; }
-        else if (e.KeyCode == Keys.F3) { if (_page == "library") { _management = true; ShowLibrary(); } else if (_page == "detail") ShowEdit(); else if (_page == "edit") ShowGlobal(); e.Handled = true; }
-        else if (e.KeyCode == Keys.F4 && !e.Alt && (_page == "detail" || _page == "edit" || _page == "global" || (_page == "library" && _management))) { if (_page == "global") ShowEdit(); else if (_page == "edit") ShowDetail(); else { _management = false; ShowLibrary(); } e.Handled = true; }
+        if (e.KeyCode == Keys.F2 && _page != "library") { _management = false; ShowLibrary(); e.Handled = true; }
+        else if (e.KeyCode == Keys.F3) { if (_page == "library") { _management = !_management; ShowLibrary(rebuildCards: false); } else if (_page == "detail") ShowEdit(); else if (_page == "edit") ShowGlobal(); e.Handled = true; }
+        else if (e.KeyCode == Keys.F4 && !e.Alt && (_page == "detail" || _page == "edit" || _page == "global" || (_page == "library" && _management))) { if (_page == "global") ShowEdit(); else if (_page == "edit") ShowDetail(); else { _management = false; ShowLibrary(rebuildCards: false); } e.Handled = true; }
         else if (e.KeyCode == Keys.F11) { ToggleFullscreen(); e.Handled = true; }
         else if (e.KeyCode == Keys.Escape && _fullScreen) { ToggleFullscreen(); e.Handled = true; }
     }
@@ -594,7 +595,9 @@ public sealed class MainForm : Form
         {
             using var path = new GraphicsPath(); var arc = Math.Min(24, Math.Min(button.Width, button.Height) / 2);
             path.AddArc(0, 0, arc, arc, 180, 90); path.AddArc(button.Width - arc, 0, arc, arc, 270, 90); path.AddArc(button.Width - arc, button.Height - arc, arc, arc, 0, 90); path.AddArc(0, button.Height - arc, arc, arc, 90, 90); path.CloseFigure();
+            var previous = button.Region;
             button.Region = new Region(path);
+            previous?.Dispose();
         }
         UpdateShape(); button.SizeChanged += (_, _) => UpdateShape();
     }
@@ -605,7 +608,9 @@ public sealed class MainForm : Form
             if (control.Width <= 1 || control.Height <= 1) return;
             using var path = new GraphicsPath(); var arc = Math.Min(radius, Math.Min(control.Width, control.Height) / 2);
             path.AddArc(0, 0, arc, arc, 180, 90); path.AddArc(control.Width - arc, 0, arc, arc, 270, 90); path.AddArc(control.Width - arc, control.Height - arc, arc, arc, 0, 90); path.AddArc(0, control.Height - arc, arc, arc, 90, 90); path.CloseFigure();
+            var previous = control.Region;
             control.Region = new Region(path);
+            previous?.Dispose();
         }
         UpdateShape(); control.SizeChanged += (_, _) => UpdateShape();
     }
@@ -651,12 +656,12 @@ public sealed class MainForm : Form
     }
     private void BuildTopCore(bool editAvailable)
     {
-        _top.Controls.Clear(); var nextLeft = 24;
-        var home = CreateIconButton("⌂", "Library (F2)", (_, _) => { _management = false; ShowLibrary(); }); home.Location = new Point(nextLeft, 14); _top.Controls.Add(home); nextLeft += 106;
+        ClearTop(); var nextLeft = 24;
+        if (_page != "library") { var home = CreateIconButton("⌂", "Library (F2)", (_, _) => { _management = false; ShowLibrary(); }); home.Location = new Point(nextLeft, 14); _top.Controls.Add(home); nextLeft += 106; }
         if (editAvailable) { var edit = CreateIconButton("✎", "Edit (F3)", (_, _) => HandleKeys(this, new KeyEventArgs(Keys.F3))); edit.Location = new Point(nextLeft, 14); _top.Controls.Add(edit); nextLeft += 106; }
         if (_page is "detail" or "edit" or "global" || (_page == "library" && _management))
         {
-            var back = CreateIconButton("←", "Back (F4)", (_, _) => { if (_page == "global") ShowEdit(); else if (_page == "edit") ShowDetail(); else { _management = false; ShowLibrary(); } });
+            var back = CreateIconButton("←", "Back (F4)", (_, _) => { if (_page == "global") ShowEdit(); else if (_page == "edit") ShowDetail(); else { _management = false; ShowLibrary(rebuildCards: false); } });
             back.Location = new Point(nextLeft, 14); _top.Controls.Add(back); nextLeft += 106;
         }
         if (_page == "library" && _management)
@@ -683,7 +688,7 @@ public sealed class MainForm : Form
         };
         filterButton.Width = S(76); filterButton.Height = S(76); filterButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         filterButton.Location = new Point(_top.ClientSize.Width - filterButton.Width - S(20), S(14));
-        _top.Resize += (_, _) => filterButton.Left = _top.ClientSize.Width - filterButton.Width - S(20);
+        RegisterTopResize((_, _) => filterButton.Left = _top.ClientSize.Width - filterButton.Width - S(20));
         _top.Controls.Add(filterButton);
 
         var clearSearch = CreateIconButton("×", "Clear title search", (_, _) => { _store.Data.Settings.TitleSearch = ""; _store.Save(); ShowLibrary(); });
@@ -694,7 +699,7 @@ public sealed class MainForm : Form
             clearSearch.Location = new Point(filterButton.Left - clearSearch.Width - S(8), S(25));
             search.Location = new Point(clearSearch.Left - search.Width - S(8), S(25));
         }
-        PositionSearch(); _top.Resize += (_, _) => PositionSearch();
+        PositionSearch(); RegisterTopResize((_, _) => PositionSearch());
         search.TextChanged += (_, _) =>
         {
             _store.Data.Settings.TitleSearch = search.Text;
@@ -704,7 +709,7 @@ public sealed class MainForm : Form
         _top.Controls.Add(search); _top.Controls.Add(clearSearch);
 
         var chips = new FlowLayoutPanel { Left = S(342), Top = S(14), Height = S(78), Width = Math.Max(S(100), search.Left - S(350)), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, FlowDirection = FlowDirection.RightToLeft, WrapContents = true, AutoScroll = true, Padding = new Padding(S(2)) };
-        _top.Resize += (_, _) => chips.Width = Math.Max(S(100), search.Left - chips.Left - S(8));
+        RegisterTopResize((_, _) => chips.Width = Math.Max(S(100), search.Left - chips.Left - S(8)));
         foreach (var d in _store.Data.TagSchema)
         {
             if (!_store.Data.Settings.SelectedTagFilters.TryGetValue(d.DimensionId, out var values)) continue;
@@ -800,7 +805,19 @@ public sealed class MainForm : Form
         popup.Controls.AddRange([list, message, buttons]); if (popup.ShowDialog(this) == DialogResult.OK) ShowLibrary();
     }
 
-    private void Clear() { _content.Controls.Clear(); }
+    private void ClearTop()
+    {
+        foreach (var handler in _topResizeHandlers) _top.Resize -= handler;
+        _topResizeHandlers.Clear();
+        foreach (Control control in _top.Controls.Cast<Control>().ToArray()) control.Dispose();
+        _top.Controls.Clear();
+    }
+    private void RegisterTopResize(EventHandler handler) { _top.Resize += handler; _topResizeHandlers.Add(handler); }
+    private void Clear()
+    {
+        foreach (Control control in _content.Controls.Cast<Control>().ToArray()) control.Dispose();
+        _content.Controls.Clear();
+    }
     private void ShowCurrent() { if (_page == "library") ShowLibrary(); else if (_page == "detail") ShowDetail(); else if (_page == "edit") ShowEdit(); else ShowGlobal(); }
     private float UiScale => Math.Clamp(ClientSize.Width / 1280f, .78f, 1.28f);
     private int S(int value) => Math.Max(1, (int)Math.Round(value * UiScale));
@@ -865,15 +882,20 @@ public sealed class MainForm : Form
     }
     private void EnableWheelScroll(Control root)
     {
-        root.MouseWheel += (_, e) => ScrollContentByWheel(e.Delta);
+        root.MouseWheel -= WheelScroll;
+        root.MouseWheel += WheelScroll;
         foreach (Control child in root.Controls) EnableWheelScroll(child);
     }
+    private void WheelScroll(object? sender, MouseEventArgs e) => ScrollContentByWheel(e.Delta);
     private void ScrollContentByWheel(int delta)
     {
         var bar = _content.VerticalScroll;
         if (!bar.Visible) return;
-        var next = Math.Clamp(bar.Value - delta, bar.Minimum, Math.Max(bar.Minimum, bar.Maximum - bar.LargeChange + 1));
-        bar.Value = next; _content.PerformLayout();
+        var notches = delta / 120;
+        if (notches == 0) notches = Math.Sign(delta);
+        var step = Math.Max(S(24), Math.Max(1, SystemInformation.MouseWheelScrollLines) * S(16));
+        var next = Math.Clamp(bar.Value - notches * step, bar.Minimum, Math.Max(bar.Minimum, bar.Maximum - bar.LargeChange + 1));
+        if (next != bar.Value) bar.Value = next;
     }
     private Panel FieldCard(Control field, bool tagField = false)
     {
@@ -882,20 +904,32 @@ public sealed class MainForm : Form
         card.Paint += (_, e) => { using var pen = new Pen(accent, 2); e.Graphics.DrawRectangle(pen, 1, 1, card.Width - 3, card.Height - 3); };
         field.Dock = DockStyle.Fill; field.Margin = Padding.Empty; card.Controls.Add(field); return card;
     }
-    private void ShowLibrary()
+    private void ShowLibrary(bool rebuildCards = true)
     {
-        if (_store.RefreshAllGamePathStatuses()) _store.Save();
-        _page = "library"; _management = _management && _page == "library"; BuildTop(!_management); Clear();
-        PopulateLibraryCards();
+        var statusChanged = _store.RefreshAllGamePathStatuses();
+        if (statusChanged) _store.Save();
+        _page = "library"; BuildTop(!_management);
+        if (rebuildCards || statusChanged || !_content.Controls.OfType<BufferedFlowLayoutPanel>().Any()) PopulateLibraryCards();
+        else ApplyLibraryManagementMode();
     }
     private void PopulateLibraryCards()
     {
         if (_page != "library") return;
         Clear();
-        var grid = new FlowLayoutPanel { Width = _content.ClientSize.Width - 60, AutoSize = true, WrapContents = true };
+        var grid = new BufferedFlowLayoutPanel { Width = _content.ClientSize.Width - 60, AutoSize = true, WrapContents = true };
+        grid.SuspendLayout();
         foreach (var game in FilteredGames().OrderBy(game => game.Id)) grid.Controls.Add(GameCard(game));
+        grid.ResumeLayout(true);
         _content.Controls.Add(grid);
         EnableWheelScroll(grid);
+    }
+    private void ApplyLibraryManagementMode()
+    {
+        foreach (var card in Descendants(_content).OfType<Panel>().Where(control => control.Tag is GameEntry))
+        {
+            card.BackColor = Color.FromArgb(38, 42, 42);
+            foreach (var control in Descendants(card)) control.Cursor = _management ? Cursors.Default : Cursors.Hand;
+        }
     }
     private IEnumerable<GameEntry> FilteredGames()
     {
@@ -949,7 +983,7 @@ public sealed class MainForm : Form
         // card; all cards use this same height to retain a uniform grid.
         var singleHeight = S(80); var multiRowHeight = S(42); var multiHeight = multiRowHeight * 2 + S(6);
         var singleTop = titleTop + titleHeight + S(3); var multiTop = singleTop + singleHeight + S(4); var cardHeight = multiTop + multiHeight + S(9);
-        var card = new Panel { Width = cardWidth, Height = cardHeight, Margin = new Padding(S(16)), BorderStyle = BorderStyle.FixedSingle, AccessibleName = game.Title, BackColor = baseColor };
+        var card = new Panel { Width = cardWidth, Height = cardHeight, Margin = new Padding(S(16)), BorderStyle = BorderStyle.FixedSingle, AccessibleName = game.Title, BackColor = baseColor, Tag = game };
         var imageHeight = S(263); var imageWidth = imageHeight * 3 / 4; var rightLeft = S(9) + imageWidth + S(10); var rightWidth = cardWidth - rightLeft - S(9);
         var image = new PictureBox { Left = S(9), Top = S(9), Width = imageWidth, Height = imageHeight, SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), Cursor = _management ? Cursors.Default : Cursors.Hand };
         var statusGap = S(7); var statusHeight = (imageHeight - statusGap) / 2;
@@ -978,21 +1012,26 @@ public sealed class MainForm : Form
             multiTags.Controls.Add(row); multiRowTop += multiRowHeight + S(6);
         }
         card.Controls.AddRange([image, playStatus, gameStatus, id, title, singleTags, multiTags]);
-        if (_management)
+        void Interact(object? _, MouseEventArgs e)
         {
-            void DeleteOnRightClick(object? _, MouseEventArgs e) { if (e.Button == MouseButtons.Right) DeleteGame(game); }
-            foreach (Control child in card.Controls) child.MouseUp += DeleteOnRightClick;
-            foreach (Control child in singleTags.Controls.Cast<Control>().Concat(multiTags.Controls.Cast<Control>())) child.MouseUp += DeleteOnRightClick;
-            card.MouseUp += DeleteOnRightClick;
+            if (_management)
+            {
+                if (e.Button == MouseButtons.Right) DeleteGame(game);
+                return;
+            }
+            if (e.Button == MouseButtons.Left) { _selectedId = game.Id; ShowDetail(); }
         }
-        else
+        void Highlight(bool enabled)
         {
-            void Open(object? _, MouseEventArgs e) { if (e.Button == MouseButtons.Left) { _selectedId = game.Id; ShowDetail(); } }
-            void Highlight(bool enabled) { card.BackColor = enabled ? Color.FromArgb(57, 68, 62) : baseColor; singleTags.BackColor = card.BackColor; multiTags.BackColor = card.BackColor; }
-            card.MouseUp += Open; image.MouseUp += Open; id.MouseUp += Open; title.MouseUp += Open; singleTags.MouseUp += Open; multiTags.MouseUp += Open; playStatus.MouseUp += Open; gameStatus.MouseUp += Open;
-            foreach (Control child in singleTags.Controls.Cast<Control>().Concat(multiTags.Controls.Cast<Control>())) child.MouseUp += Open;
-            card.MouseEnter += (_, _) => Highlight(true); card.MouseLeave += (_, _) => Highlight(false); image.MouseEnter += (_, _) => Highlight(true); image.MouseLeave += (_, _) => Highlight(false);
+            if (_management) return;
+            card.BackColor = enabled ? Color.FromArgb(57, 68, 62) : baseColor;
+            singleTags.BackColor = card.BackColor; multiTags.BackColor = card.BackColor;
         }
+        card.MouseUp += Interact;
+        foreach (var control in Descendants(card)) control.MouseUp += Interact;
+        card.MouseEnter += (_, _) => Highlight(true); card.MouseLeave += (_, _) => Highlight(false);
+        image.MouseEnter += (_, _) => Highlight(true); image.MouseLeave += (_, _) => Highlight(false);
+        card.Disposed += (_, _) => { var owned = image.Image; image.Image = null; owned?.Dispose(); };
         return card;
     }
     private IEnumerable<TagDimension> HomeDisplayDimensions() => _store.Data.Settings.HomeDisplayDimensionIds
@@ -1914,6 +1953,18 @@ public sealed record Selection<T>(T Value, string Text)
 {
     public override string ToString() => Text;
 }
+
+/// <summary>Flow layout with buffered painting to avoid card tearing while scrolling.</summary>
+public sealed class BufferedFlowLayoutPanel : FlowLayoutPanel
+{
+    public BufferedFlowLayoutPanel()
+    {
+        DoubleBuffered = true;
+        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        UpdateStyles();
+    }
+}
+
 
 /// <summary>Prevents a closed native ComboBox from consuming the page scroll wheel.</summary>
 public sealed class ScrollSafeComboBox : ComboBox

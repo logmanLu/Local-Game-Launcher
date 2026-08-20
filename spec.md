@@ -1,6 +1,6 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.1.0b3 (beta)
+**Current application specification:** 2.1.0b4 (beta)
 **Savedata format:** v5
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
@@ -50,7 +50,7 @@ The user-owned `savedata/` directory is never included in source-control or rele
 | `AppLog` | Dependency-free daily rolling diagnostics. Logging failures never stop the launcher. |
 | `Domain` | Persistent DTOs, default statuses/save roots, and data-format version constants. |
 | `DataStore` | Loads, migrates, normalizes, validates and atomically writes `gameshelf.json`; all state changes pass through this layer. |
-| `MainForm` | Owns all pages, native menu integration, responsive layouts, navigation, input, edit dialogs and UI-state persistence. |
+| `MainForm` | Owns all pages, native menu integration, responsive layouts, navigation, input, edit dialogs and UI-state persistence. Its rebuilt control trees dispose retired controls, resize subscriptions, rounded-corner regions and owned Library cover bitmaps. |
 | `ImageService` | Imports cover images, stores them under `savedata/images`, and supports the image crop workflow. |
 | `PackageService` (`ImportExport.cs`) | Exports/imports individual-game packages and reconciles imported schema entries. |
 | `GameProcessTracker` | Records launched process identities and performs bounded Windows/WMI child-process diagnostics. It does not drive a Stop-game UI. |
@@ -106,7 +106,7 @@ All normal pages are scrollable where needed. Buttons use coloured rounded squar
 
 | Input | Result |
 | --- | --- |
-| `F2` | Library / Home |
+| `F2` | Return to Library from a non-Library page. It is intentionally inert while already on Library, including Library management mode. |
 | `F3` | Game management or global management, according to context |
 | `F4` | Back to Library or the preceding supported page |
 | `F11` | Toggle fullscreen |
@@ -118,6 +118,8 @@ The last page is persisted only for Library and game detail. If the launcher is 
 ## 7. Library / Home
 
 Library shows responsive game cards in ascending numeric game-ID order. In normal mode, only a left click opens a game detail page. In game-management mode, right-clicking a card performs the management context action, including deletion; cards do not open games in that mode. Deletion uses a dark GameShelf confirmation dialog that names the game number and title, offers Confirm and a default/cancel "never mind" action, and treats Enter as cancel.
+
+Switching into or out of Library management mode does not recreate the card grid. Existing cards evaluate their click behaviour against the current management flag, preserving the Library scroll position while preventing game entry in management mode. The content and card grid use double-buffered flow surfaces; wheel scrolling updates only the scroll bar position and never forces a full page layout for each wheel tick.
 
 Each card has a fixed portrait 3:4 cover at upper-left, enlarged by 1.2× from the prior card layout. Its two status lamps stack vertically to the cover's right and together match the cover height. The decimal game number is below the cover, with a measured height that safely holds large multi-digit IDs. Every card reserves exactly two title lines even when its title uses only one, so all card heights remain uniform. The compact two-line single-select strip follows immediately, followed by two separate compact, single-line rows for the chosen multi-select dimensions. An individual multi row scrolls horizontally on overflow and never consumes the next dimension's row. The title renders a literal `\\n` as a line break. Every multi value uses its own orange chip, while single chips use purple. When no multi-display selection has been stored, the first two multi-select dimensions are selected automatically. Filtering always considers every dimension.
 
