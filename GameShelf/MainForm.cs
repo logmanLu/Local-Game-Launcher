@@ -42,12 +42,15 @@ public sealed class MainForm : Form
     private bool _suppressResizeLayout;
     private const int WmCommand = 0x0111;
     private const uint MfString = 0x0000, MfPopup = 0x0010, MfChecked = 0x0008;
-    private const int LauncherAutoLatestCommand = 0x7000, LauncherAutoStableCommand = 0x7001, LauncherCommandBase = 0x7010, LanguageCommandBase = 0x7200;
+    private const int LauncherAutoLatestCommand = 0x7000, LauncherAutoStableCommand = 0x7001, LauncherUpdateCommand = 0x7002, LauncherCommandBase = 0x7010, LanguageCommandBase = 0x7200;
     private const int WmEnterMenuLoop = 0x0211, WmExitMenuLoop = 0x0212;
     private readonly Dictionary<int, Action> _nativeMenuCommands = [];
     private readonly System.Windows.Forms.Timer _nativeMenuHoverTimer = new() { Interval = 120 };
     private IntPtr _nativeMenu;
     private bool _nativeMenuBuilt;
+    private readonly List<LauncherChoice> _discoveredLaunchers = [];
+    private LauncherChoice? _availableLauncherUpdate;
+    private bool _launcherScanStarted;
     private bool _nativeMenuVisible;
     private bool _nativeMenuInLoop;
     private bool _launcherHandoffInProgress;
@@ -72,11 +75,13 @@ public sealed class MainForm : Form
         {
             if (ApplyLauncherSelection()) return;
             RestorePersistedWindowState();
+            RememberCurrentLauncherVersion();
         };
         Shown += (_, _) =>
         {
             BuildNativeMenu();
             _nativeMenuHoverTimer.Start();
+            ScheduleLauncherScan();
             if (!_fullScreen) return;
             // RestoreWindow runs before the native form handle exists, so its
             // fullscreen transition cannot queue the usual post-transition refresh.
@@ -117,14 +122,25 @@ public sealed class MainForm : Form
         if (menu == IntPtr.Zero || launcherMenu == IntPtr.Zero || languageMenu == IntPtr.Zero) return;
         _nativeMenuCommands.Clear();
         var current = Path.GetFullPath(Application.ExecutablePath);
-        var candidates = DiscoverLaunchers();
-        var launchers = VersionMenuLaunchers(candidates);
+        // Do not enumerate files while the window is starting or when the menu
+        // opens. The background scan updates this cache after the first frame.
+        var launchers = VersionMenuLaunchers(_discoveredLaunchers);
+        var currentChoice = CurrentLauncherChoice();
+        if (currentChoice is not null && launchers.All(item => !SameLauncher(item, currentChoice))) launchers.Insert(0, currentChoice);
+        var lastChoice = LastUsedLauncherChoice();
+        if (lastChoice is not null && launchers.All(item => !SameLauncher(item, lastChoice))) launchers.Insert(0, lastChoice);
         var selectedPolicy = _store.Data.Settings.LauncherSelection;
         AppendMenu(launcherMenu, MfString | (selectedPolicy == "auto-latest" ? MfChecked : 0), LauncherAutoLatestCommand, "Automatically select latest version");
         _nativeMenuCommands[LauncherAutoLatestCommand] = () => SelectLauncherPolicy("auto-latest");
         AppendMenu(launcherMenu, MfString | (selectedPolicy == "auto-stable" ? MfChecked : 0), LauncherAutoStableCommand, "Automatically select latest stable version");
         _nativeMenuCommands[LauncherAutoStableCommand] = () => SelectLauncherPolicy("auto-stable");
         AppendMenu(launcherMenu, 0x0800, 0, null);
+        if (_availableLauncherUpdate is not null)
+        {
+            AppendMenu(launcherMenu, MfString, LauncherUpdateCommand, "Update to " + _availableLauncherUpdate.FullLabel);
+            _nativeMenuCommands[LauncherUpdateCommand] = InstallAvailableLauncherUpdate;
+            AppendMenu(launcherMenu, 0x0800, 0, null);
+        }
         if (launchers.Count == 0)
         {
             AppendMenu(launcherMenu, MfString, 0, "No published versions found");
@@ -223,20 +239,97 @@ public sealed class MainForm : Form
             : null;
     }
 
+    private LauncherChoice? CurrentLauncherChoice() => ParseLauncherChoice(Application.ExecutablePath);
+    private LauncherChoice? LastUsedLauncherChoice()
+    {
+        var label = _store.Data.Settings.LastLauncherVersion;
+        if (string.IsNullOrWhiteSpace(label)) return null;
+        var path = Path.Combine(_store.Paths.Root, "Launcher_" + label.Replace('.', '_') + ".exe");
+        return File.Exists(path) ? ParseLauncherChoice(path) : null;
+    }
+    private static bool SameLauncher(LauncherChoice left, LauncherChoice right) =>
+        string.Equals(Path.GetFullPath(left.Path), Path.GetFullPath(right.Path), StringComparison.OrdinalIgnoreCase);
+    private void RememberCurrentLauncherVersion()
+    {
+        var current = CurrentLauncherChoice();
+        if (current is null || string.Equals(_store.Data.Settings.LastLauncherVersion, current.FullLabel, StringComparison.OrdinalIgnoreCase)) return;
+        _store.Data.Settings.LastLauncherVersion = current.FullLabel;
+        _store.Save();
+    }
     private bool ApplyLauncherSelection()
     {
-        var target = ResolveLauncherSelection(DiscoverLaunchers());
+        var selection = _store.Data.Settings.LauncherSelection;
+        LauncherChoice? target = null;
+        if (selection is "auto-latest" or "auto-stable")
+        {
+            target = LastUsedLauncherChoice();
+            // A first installation has no remembered version, so only that
+            // bootstrap case performs an immediate scan.
+            if (target is null) target = ResolveLauncherSelection(DiscoverLaunchers());
+        }
+        else target = ResolveLauncherSelection(DiscoverLaunchers());
         return target is not null && RestartWithLauncher(target.Path, "configured version policy");
     }
 
     private void SelectLauncherPolicy(string selection)
     {
         _store.Data.Settings.LauncherSelection = selection;
+        _availableLauncherUpdate = null;
+        if (selection is "auto-latest" or "auto-stable")
+        {
+            RememberCurrentLauncherVersion();
+            _store.Save();
+            AppLog.Information("UI", $"Selected passive launcher policy '{selection}'.");
+            ScheduleLauncherScan();
+            BeginInvoke((Action)(() => { if (!IsDisposed) RebuildNativeMenu(); }));
+            return;
+        }
         _store.Save();
         AppLog.Information("UI", $"Selected launcher policy '{selection}'.");
         var target = ResolveLauncherSelection(DiscoverLaunchers());
         if (target is not null && RestartWithLauncher(target.Path, "selected version policy")) return;
         BeginInvoke((Action)(() => { if (!IsDisposed) RebuildNativeMenu(); }));
+    }
+    private void ScheduleLauncherScan()
+    {
+        if (_launcherScanStarted) return;
+        _launcherScanStarted = true;
+        _ = Task.Run(DiscoverLaunchers).ContinueWith(task =>
+        {
+            if (task.IsCanceled || task.IsFaulted) return;
+            BeginInvoke((Action)(() =>
+            {
+                if (IsDisposed) return;
+                _discoveredLaunchers.Clear();
+                _discoveredLaunchers.AddRange(task.Result);
+                _availableLauncherUpdate = null;
+                if (_store.Data.Settings.LauncherSelection is "auto-latest" or "auto-stable")
+                {
+                    var target = ResolveLauncherSelection(_discoveredLaunchers);
+                    var current = CurrentLauncherChoice();
+                    if (target is not null && current is not null && !SameLauncher(target, current) && IsNewerLauncher(target, current)) _availableLauncherUpdate = target;
+                }
+                AppLog.Debug("UI", $"Passive launcher scan found {_discoveredLaunchers.Count} versioned executable(s){(_availableLauncherUpdate is null ? "." : "; update available: " + _availableLauncherUpdate.FullLabel + ".")}");
+                RebuildNativeMenu();
+            }));
+        });
+    }
+    private static bool IsNewerLauncher(LauncherChoice candidate, LauncherChoice current)
+    {
+        var core = CompareCore(candidate, current);
+        if (core != 0) return core > 0;
+        if (candidate.IsPreview != current.IsPreview) return !candidate.IsPreview;
+        if (!candidate.IsPreview) return false;
+        var kind = candidate.PreviewKindRank.CompareTo(current.PreviewKindRank);
+        return kind != 0 ? kind > 0 : candidate.PreviewRevision > current.PreviewRevision;
+    }
+    private void InstallAvailableLauncherUpdate()
+    {
+        var target = _availableLauncherUpdate;
+        if (target is null) return;
+        _store.Data.Settings.LastLauncherVersion = target.FullLabel;
+        _store.Save();
+        RestartWithLauncher(target.Path, "available launcher update");
     }
 
     private void RebuildNativeMenu()
@@ -662,11 +755,11 @@ public sealed class MainForm : Form
         }
         AddStatusFilter("Play status", StatusKind.Play, PlayFilterColor, () => selectedPlay, value => selectedPlay = value);
         AddStatusFilter("Game status", StatusKind.Game, GameFilterColor, () => selectedGame, value => selectedGame = value);
-        foreach (var dimension in _store.Data.TagSchema)
+        foreach (var dimension in _store.Data.TagSchema.OrderBy(dimension => dimension.IsMultiSelect ? 1 : 0))
         {
             var color = dimension.IsMultiSelect ? MultiTagColor : SingleTagColor;
             var section = Section(dimension.Name, color);
-            foreach (var value in dimension.Values.Where(x => x.Key != 0).OrderBy(x => x.Key))
+            foreach (var value in OrderedDimensionValues(dimension).Where(value => value.Key != 0))
             {
                 var id = value.Key; var tile = Tile(value.Value, selected.TryGetValue(dimension.DimensionId, out var set) && set.Contains(id), color);
                 tile.CheckedChanged += (_, _) => { if (!selected.TryGetValue(dimension.DimensionId, out var values)) selected[dimension.DimensionId] = values = []; if (tile.Checked) values.Add(id); else values.Remove(id); };
@@ -877,7 +970,7 @@ public sealed class MainForm : Form
         {
             var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == multiDimension.DimensionId);
             var row = new FlowLayoutPanel { Left = 0, Top = multiRowTop, Width = multiTags.Width, Height = multiRowHeight, AutoScroll = true, WrapContents = false, BackColor = baseColor, Padding = Padding.Empty };
-            foreach (var value in game.MultiTags.ElementAtOrDefault(index) ?? [])
+            foreach (var value in OrderedSelectedValues(multiDimension, game.MultiTags.ElementAtOrDefault(index) ?? []))
             {
                 var text = multiDimension.Values.GetValueOrDefault(value) ?? "";
                 if (!string.IsNullOrWhiteSpace(text)) row.Controls.Add(FilterChip(text, MultiTagColor));
@@ -908,6 +1001,18 @@ public sealed class MainForm : Form
     private IEnumerable<TagDimension> HomeMultiDisplayDimensions() => _store.Data.Settings.HomeMultiDisplayDimensionIds
         .Select(id => _store.Data.TagSchema.FirstOrDefault(dimension => dimension.IsMultiSelect && dimension.DimensionId == id))
         .Where(dimension => dimension is not null).Cast<TagDimension>();
+    private IEnumerable<KeyValuePair<int, string>> OrderedDimensionValues(TagDimension dimension)
+    {
+        var order = dimension.ValueOrder ?? [];
+        var known = order.Where(dimension.Values.ContainsKey).Select(id => new KeyValuePair<int, string>(id, dimension.Values[id]));
+        var missing = dimension.Values.Where(pair => !order.Contains(pair.Key)).OrderBy(pair => pair.Key);
+        return known.Concat(missing);
+    }
+    private IEnumerable<int> OrderedSelectedValues(TagDimension dimension, IEnumerable<int> values)
+    {
+        var selected = values.ToHashSet();
+        return OrderedDimensionValues(dimension).Select(pair => pair.Key).Where(selected.Contains);
+    }
     private static string DisplayTitle(string title) => (title ?? "").Replace("\\n", "\n");
     private Image LoadImage(GameEntry g)
     {
@@ -1065,7 +1170,7 @@ public sealed class MainForm : Form
                 singleChips.Add(DetailTagChip($"{dimension.Name} : {value}", SingleTagColor, headlineContentWidth));
                 continue;
             }
-            var values = (game.MultiTags.ElementAtOrDefault(index) ?? [])
+            var values = OrderedSelectedValues(dimension, game.MultiTags.ElementAtOrDefault(index) ?? [])
                 .Select(id => dimension.Values.GetValueOrDefault(id) ?? "")
                 .Where(value => !string.IsNullOrWhiteSpace(value)).ToList();
             if (values.Count > 0) multiGroups.Add((dimension.Name, values));
@@ -1110,11 +1215,11 @@ public sealed class MainForm : Form
 
         // Section 2: an equal 2A/2B split, with the two lamps horizontally sharing 2B.
         var noteText = string.IsNullOrWhiteSpace(game.Note) ? " " : game.Note;
-        using var noteFont = new Font(Font.FontFamily, S(22), FontStyle.Bold);
+        using var noteFont = new Font(Font.FontFamily, S(16), FontStyle.Bold);
         var secondHeight = Math.Max(S(170), TextRenderer.MeasureText(noteText, noteFont, new Size(sectionWidth / 2 - S(28), 0), TextFormatFlags.WordBreak).Height + S(48));
         var second = new TableLayoutPanel { ColumnCount = 2, Width = sectionWidth, Height = secondHeight, Margin = new Padding(0, S(18), 0, S(18)), BackColor = page.BackColor };
         second.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); second.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        second.Controls.Add(new Label { Text = noteText, Dock = DockStyle.Fill, Padding = new Padding(0, S(20), S(18), 0), Font = new Font(Font.FontFamily, S(22), FontStyle.Bold), ForeColor = Color.White, AccessibleName = "Note" }, 0, 0);
+        second.Controls.Add(new Label { Text = noteText, Dock = DockStyle.Fill, Padding = new Padding(0, S(20), S(18), 0), Font = new Font(Font.FontFamily, S(16), FontStyle.Bold), ForeColor = Color.White, AccessibleName = "Note" }, 0, 0);
         var lights = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Fill, Margin = new Padding(S(18), S(18), 0, S(18)), BackColor = page.BackColor };
         lights.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); lights.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         var playLight = StatusBlock(StatusKind.Play, game.PlayStatusId, Rectangle.Empty, (_, e) => HandlePlayStatusClick(game, e)); playLight.Dock = DockStyle.Fill; playLight.Margin = new Padding(0, 0, S(6), 0);
@@ -1308,7 +1413,7 @@ public sealed class MainForm : Form
         if (selected.Count > 1) selected.Remove(0);
         var picker = new FlowLayoutPanel { AutoScroll = true, WrapContents = false, BackColor = Color.FromArgb(46, 32, 23), Padding = new Padding(S(6)), Tag = dimension.DimensionId };
         var checks = new List<CheckBox>(); var changing = false;
-        foreach (var value in dimension.Values.OrderBy(value => value.Key))
+        foreach (var value in OrderedDimensionValues(dimension))
         {
             var id = value.Key; var font = new Font(Font.FontFamily, S(13), FontStyle.Bold); var size = TextRenderer.MeasureText(value.Value, font);
             var check = new CheckBox { Tag = id, Text = value.Value, Checked = selected.Contains(id), Appearance = Appearance.Button, AutoSize = false, Width = size.Width + S(28), Height = Math.Max(S(42), size.Height + S(16)), TextAlign = ContentAlignment.MiddleCenter, FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false, ForeColor = Color.White, BackColor = Color.FromArgb(83, 62, 46), Font = font, Margin = new Padding(S(4)) };
@@ -1643,7 +1748,7 @@ public sealed class MainForm : Form
         {
             var row = new FlowLayoutPanel { Width = rows.Width - S(36), Height = S(154), WrapContents = false, AutoScroll = true, Padding = new Padding(0, 0, 0, S(6)) };
             row.Controls.Add(ElementTile(dimension.Name + (dimension.IsMultiSelect ? " (multi)" : ""), false, () => { }, DimensionContext(dimension.DimensionId)));
-            foreach (var value in dimension.Values.OrderBy(x => x.Key)) row.Controls.Add(ElementTile(value.Value, false, () => { if (value.Key != 0) EditTagValue(dimension.DimensionId, value.Key); }, ValueContext(dimension.DimensionId, value.Key)));
+            foreach (var value in OrderedDimensionValues(dimension)) row.Controls.Add(ElementTile(value.Value, false, () => { if (value.Key != 0) EditTagValue(dimension.DimensionId, value.Key); }, ValueContext(dimension.DimensionId, value.Key)));
             row.Controls.Add(ElementTile("＋", true, () => AddValueTile(dimension.DimensionId), null)); rows.Controls.Add(row); EnableWheelScroll(row);
         }
         rows.Controls.Add(ElementTile("＋", true, AddDimensionTile, null)); section.Controls.Add(rows); EnableWheelScroll(rows); return section;
@@ -1674,6 +1779,12 @@ public sealed class MainForm : Form
         if (value == 0) return null;
         var dimension = _store.Data.TagSchema.Single(x => x.DimensionId == dimensionId); var menu = CreateDarkContextMenu();
         menu.Items.Add("Edit", null, (_, _) => { var text = Prompt("Value display text", dimension.Values[value]); if (text is not null) { _store.SetTagValue(dimensionId, value, text); ShowGlobal(true); } });
+        if (dimension.IsMultiSelect)
+        {
+            var index = dimension.ValueOrder.IndexOf(value);
+            if (index > 1) menu.Items.Add("Move earlier", null, (_, _) => { _store.MoveMultiTagValue(dimensionId, value, -1); ShowGlobal(true); });
+            if (index >= 1 && index < dimension.ValueOrder.Count - 1) menu.Items.Add("Move later", null, (_, _) => { _store.MoveMultiTagValue(dimensionId, value, 1); ShowGlobal(true); });
+        }
         menu.Items.Add("Delete", null, (_, _) => { if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) == DialogResult.Yes) { _store.DeleteTagValue(dimensionId, value); ShowGlobal(true); } }); return menu;
     }
     private void ExpandGlobalSection(GroupBox group, int width)
@@ -1718,7 +1829,30 @@ public sealed class MainForm : Form
     }
     private void DeleteGame(GameEntry game)
     {
-        if (MessageBox.Show($"{game.Id}: {game.Title}\n{_t["Confirm deletion"]}\nThis permanently removes the record and its image.", "GameShelf", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) { _store.DeleteGame(game.Id); ShowLibrary(); }
+        if (!ConfirmDeleteGame(game)) return;
+        _store.DeleteGame(game.Id);
+        ShowLibrary();
+    }
+    private bool ConfirmDeleteGame(GameEntry game)
+    {
+        using var dialog = new Form { Text = "GameShelf", StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(S(620), S(260)), MinimumSize = new Size(S(500), S(230)), FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, BackColor = Color.FromArgb(35, 38, 39), ForeColor = Color.White, Font = Font };
+        var prompt = new Label { Text = $"\u662f\u5426\u522a\u9664No{game.Id} {DisplayTitle(game.Title)}?", AutoSize = true, MaximumSize = new Size(S(550), 0), Left = S(28), Top = S(34), Font = new Font(Font.FontFamily, S(19), FontStyle.Bold), ForeColor = Color.White };
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = S(92), FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(S(18), S(12), S(18), S(12)), BackColor = dialog.BackColor };
+        Button ButtonFor(string text, Color color, DialogResult result)
+        {
+            var button = new Button { Text = text, Width = S(140), Height = S(58), Margin = new Padding(S(8), 0, 0, 0), DialogResult = result, Font = new Font(Font.FontFamily, S(15), FontStyle.Bold), FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false, BackColor = color, ForeColor = Color.White };
+            button.FlatAppearance.BorderColor = Color.FromArgb(181, 228, 245);
+            ApplyRoundedCorners(button);
+            return button;
+        }
+        var cancel = ButtonFor("\u9084\u662f\u7b97\u4e86", Color.FromArgb(181, 74, 91), DialogResult.Cancel);
+        var confirm = ButtonFor("\u78ba\u5b9a", Color.FromArgb(45, 139, 94), DialogResult.OK);
+        buttons.Controls.Add(cancel);
+        buttons.Controls.Add(confirm);
+        dialog.Controls.AddRange([prompt, buttons]);
+        dialog.AcceptButton = cancel;
+        dialog.CancelButton = cancel;
+        return dialog.ShowDialog(this) == DialogResult.OK;
     }
     private void ExportGame(GameEntry game)
     {

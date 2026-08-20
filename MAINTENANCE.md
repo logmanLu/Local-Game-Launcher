@@ -1,6 +1,12 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0b` (beta)
+**Current application patch:** `2.1.0b1` (beta)
+### 2.1.0b1 (beta)
+- Reduced game-detail note typography to a compact secondary scale, keeping it visually distinct from the title.
+- Added persistent ordering for tag values (savedata v5). Multi-select values expose **Move earlier**/**Move later** in their dark right-click menu; the chosen order is used by the global editor, first-level picker, Library cards, detail view and filter popup.
+- The filter popup now lists all single-select dimensions together, followed by all multi-select dimensions.
+- Replaced game deletion's native message box with a roomy dark confirmation dialog. Its Chinese prompt names the game number and title, offers Confirm and a default/cancel "never mind" action, and treats Enter as cancel.
+- Made automatic launcher selection passive. Startup first opens the last versioned executable without scanning release files; a post-first-frame background scan exposes an explicit **Update to <version>** Version-menu item when a newer eligible target exists. First installation remains self-bootstrapping.
 
 ## Patch history
 
