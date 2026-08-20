@@ -1050,12 +1050,15 @@ public sealed class MainForm : Form
         return block;
     }
 
-    private void ShowDetail()
+    private void ShowDetail(bool preserveScroll = false)
     {
         if (_selectedId is null) { ShowLibrary(); return; }
+        var scrollY = preserveScroll && _page == "detail" ? _content.VerticalScroll.Value : 0;
         _page = "detail"; BuildTop(true); Clear(); var g = _store.GetGame(_selectedId.Value);
         if (_store.RefreshGamePathStatus(g)) _store.Save();
         BuildDetailPageV2(g);
+        if (scrollY > 0 && IsHandleCreated)
+            BeginInvoke((Action)(() => { if (!IsDisposed && _page == "detail") _content.AutoScrollPosition = new Point(0, scrollY); }));
         return;
 #if false
         var availableWidth = Math.Max(S(420), _content.ClientSize.Width - _content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - S(8));
@@ -1291,7 +1294,7 @@ public sealed class MainForm : Form
         var now = DateTime.UtcNow;
         if (_playStatusClicks.TryGetValue(game.Id, out var previous) && now - previous <= TimeSpan.FromSeconds(.8))
         {
-            _playStatusClicks.Remove(game.Id); _store.SetNextPlayStatus(game.Id); ShowDetail(); return;
+            _playStatusClicks.Remove(game.Id); _store.SetNextPlayStatus(game.Id); ShowDetail(true); return;
         }
         _playStatusClicks[game.Id] = now;
     }
@@ -1301,7 +1304,7 @@ public sealed class MainForm : Form
         var now = DateTime.UtcNow;
         if (_gameStatusClicks.TryGetValue(game.Id, out var previous) && now - previous <= TimeSpan.FromSeconds(.8))
         {
-            _gameStatusClicks.Remove(game.Id); _store.SetNextInvalidGameStatus(game.Id); ShowDetail(); return;
+            _gameStatusClicks.Remove(game.Id); _store.SetNextInvalidGameStatus(game.Id); ShowDetail(true); return;
         }
         _gameStatusClicks[game.Id] = now;
     }

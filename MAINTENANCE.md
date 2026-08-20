@@ -1,7 +1,9 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0b2` (beta)
+**Current application patch:** `2.1.0b3` (beta)
 ### 2.1.0b1 (beta)
+### 2.1.0b3 (beta)
+- Double-clicking a play-status or unavailable-game-status lamp now restores the current Game detail vertical scroll position after its page rebuild instead of jumping to the top.
 ### 2.1.0b2 (beta)
 - Library game cards are now always ordered by their numeric game ID in ascending order, after every active search/status/tag filter is applied.
 - Reduced game-detail note typography to a compact secondary scale, keeping it visually distinct from the title.
