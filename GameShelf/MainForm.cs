@@ -956,6 +956,7 @@ public sealed class MainForm : Form
             .Select(item => item.index).ToList();
         _libraryCards.UpdateItems(games, changed);
         _libraryCardSnapshot = new LibraryCardSnapshot(presentationKey, games.Select(game => game.Id).ToList(), fingerprints);
+        ClearContentExceptLibraryCards();
         if (_libraryCards.Parent is null) _content.Controls.Add(_libraryCards);
         else if (_libraryCards.Parent != _content) return false;
         ApplyLibraryManagementMode();
@@ -966,6 +967,15 @@ public sealed class MainForm : Form
         AppLog.Debug("Library", changed.Count == 0 ? "Restored cached Library card grid without rebuilding cards." : $"Restored cached Library grid and refreshed {changed.Count} changed card slots.");
         return true;
     }
+    private void ClearContentExceptLibraryCards()
+    {
+        foreach (var control in _content.Controls.Cast<Control>().Where(control => control != _libraryCards).ToArray())
+        {
+            _content.Controls.Remove(control);
+            control.Dispose();
+        }
+    }
+
     private void PopulateLibraryCards()
     {
         if (_page != "library") return;
