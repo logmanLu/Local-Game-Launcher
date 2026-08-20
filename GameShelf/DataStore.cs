@@ -72,6 +72,7 @@ public sealed class DataStore : IDisposable
         // v1 -> v2: permanent dark UI removes the obsolete Theme field.
         // v2 -> v3: multi-select dimension collections are normalized below.
         // v3 -> v4: Library supports two multi-select display dimensions.
+        // v4 -> v5: dimensions gain an explicit value display order.
         // Future fields remain in JsonExtensionData and are round-tripped.
         Data.Settings ??= new AppSettings();
         Data.Settings.UnknownFields?.Remove("Theme");
@@ -215,7 +216,7 @@ public sealed class DataStore : IDisposable
         name = name.Trim();
         if (name.Length == 0) throw new InvalidOperationException("Dimension name is required.");
         var next = Data.TagSchema.Count == 0 ? 1 : Data.TagSchema.Max(x => x.DimensionId) + 1;
-        Data.TagSchema.Add(new TagDimension { DimensionId = next, Name = name, IsMultiSelect = isMultiSelect });
+        Data.TagSchema.Add(new TagDimension { DimensionId = next, Name = name, IsMultiSelect = isMultiSelect, ValueOrder = [0] });
         foreach (var game in Data.Games) { game.Tags.Add(0); game.MultiTags.Add(isMultiSelect ? [0] : []); }
         Save();
     }
@@ -247,6 +248,7 @@ public sealed class DataStore : IDisposable
         var d = Dimension(dimensionId);
         var next = d.Values.Keys.DefaultIfEmpty(0).Max() == int.MaxValue ? throw new InvalidOperationException("Index limit reached; explicitly reuse a deleted index.") : d.Values.Keys.DefaultIfEmpty(0).Max() + 1;
         d.Values[next] = text.Trim();
+        d.ValueOrder.Add(next);
         Save();
     }
 
@@ -264,6 +266,7 @@ public sealed class DataStore : IDisposable
         var pos = Data.TagSchema.FindIndex(d => d.DimensionId == dimensionId);
         var d = Dimension(dimensionId);
         if (!d.Values.Remove(value)) throw new InvalidOperationException("Value not found.");
+        d.ValueOrder.Remove(value);
         foreach (var game in Data.Games)
         {
             if (d.IsMultiSelect)
@@ -274,6 +277,17 @@ public sealed class DataStore : IDisposable
             }
             else if (game.Tags.ElementAtOrDefault(pos) == value) game.Tags[pos] = 0;
         }
+        Save();
+    }
+
+    public void MoveMultiTagValue(int dimensionId, int value, int direction)
+    {
+        var dimension = Dimension(dimensionId);
+        if (!dimension.IsMultiSelect) throw new InvalidOperationException("Only multi-select values can be reordered here.");
+        var index = dimension.ValueOrder.IndexOf(value);
+        var target = index + direction;
+        if (value == 0 || index < 0 || target < 1 || target >= dimension.ValueOrder.Count) return;
+        (dimension.ValueOrder[index], dimension.ValueOrder[target]) = (dimension.ValueOrder[target], dimension.ValueOrder[index]);
         Save();
     }
 
@@ -448,7 +462,14 @@ public sealed class DataStore : IDisposable
         Data.RcRootPath ??= "";
         Data.SaveRoots = Data.SaveRoots?.Any() == true ? Data.SaveRoots : Defaults.SaveRoots();
         if (!Data.SaveRoots.Any(root => root.Id == Defaults.SaveRootGameDirectoryId)) Data.SaveRoots.Insert(0, Defaults.SaveRoots().First());
-        foreach (var d in Data.TagSchema) { d.Values ??= []; d.Values[0] = "none"; }
+        foreach (var d in Data.TagSchema)
+        {
+            d.Values ??= []; d.Values[0] = "none";
+            d.ValueOrder ??= [];
+            d.ValueOrder = d.ValueOrder.Where(d.Values.ContainsKey).Distinct().ToList();
+            d.ValueOrder.Remove(0); d.ValueOrder.Insert(0, 0);
+            foreach (var value in d.Values.Keys.OrderBy(value => value)) if (!d.ValueOrder.Contains(value)) d.ValueOrder.Add(value);
+        }
         Data.Settings ??= new AppSettings();
         Data.Settings.Language = Data.Settings.Language?.Trim().ToLowerInvariant() switch
         {
@@ -459,9 +480,10 @@ public sealed class DataStore : IDisposable
         };
         var launcherSelection = Data.Settings.LauncherSelection?.Trim().ToLowerInvariant() ?? "";
         Data.Settings.LauncherSelection = launcherSelection is "auto-latest" or "auto-stable"
-            || System.Text.RegularExpressions.Regex.IsMatch(launcherSelection, "^exact:[0-9]+\\.[0-9]+\\.[0-9]+(?:a[0-9]*)?$")
+            || System.Text.RegularExpressions.Regex.IsMatch(launcherSelection, "^exact:[0-9]+\\.[0-9]+\\.[0-9]+(?:[ab][0-9]*)?$")
                 ? launcherSelection
                 : "auto-latest";
+        Data.Settings.LastLauncherVersion ??= "";
         Data.Settings.SelectedTagFilters ??= [];
         Data.Settings.TitleSearch ??= "";
         Data.Settings.HomeDisplayDimensionIds ??= [];
@@ -487,6 +509,11 @@ public sealed class DataStore : IDisposable
             Data.Settings.HomeMultiDisplayDimensionIds.Add(legacyMulti);
         Data.Settings.HomeMultiDisplayDimensionIds = Data.Settings.HomeMultiDisplayDimensionIds
             .Where(id => dimensionsById.TryGetValue(id, out var multiDimension) && multiDimension.IsMultiSelect).Distinct().Take(2).ToList();
+        foreach (var dimension in Data.TagSchema.Where(dimension => dimension.IsMultiSelect))
+        {
+            if (Data.Settings.HomeMultiDisplayDimensionIds.Count >= 2) break;
+            if (!Data.Settings.HomeMultiDisplayDimensionIds.Contains(dimension.DimensionId)) Data.Settings.HomeMultiDisplayDimensionIds.Add(dimension.DimensionId);
+        }
         Data.Settings.HomeMultiDisplayDimensionId = Data.Settings.HomeMultiDisplayDimensionIds.Count > 0 ? Data.Settings.HomeMultiDisplayDimensionIds[0] : null;
         Data.Games ??= [];
         if (string.IsNullOrWhiteSpace(Data.RcRootPath))

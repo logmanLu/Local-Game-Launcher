@@ -7,7 +7,7 @@ public enum StatusKind { Play, Game }
 
 public sealed class AppData
 {
-    public const int CurrentFormatVersion = 4;
+    public const int CurrentFormatVersion = 5;
     public int Version { get; set; } = CurrentFormatVersion;
     public AppSettings Settings { get; set; } = new();
     public Dictionary<int, string> RegionCommands { get; set; } = new() { [0] = "" };
@@ -26,9 +26,11 @@ public sealed class AppSettings
     public string Language { get; set; } = "en";
     /// <summary>
     /// Version-launch policy: auto-latest, auto-stable, or
-    /// exact:&lt;major.minor.patch[alpha]&gt;.
+    /// exact:&lt;major.minor.patch[alpha-or-beta]&gt;.
     /// </summary>
     public string LauncherSelection { get; set; } = "auto-latest";
+    /// <summary>Last actual versioned launcher used by an automatic policy.</summary>
+    public string LastLauncherVersion { get; set; } = "";
     public string Page { get; set; } = "library";
     public int? SelectedGameId { get; set; }
     public bool IsMaximized { get; set; }
@@ -66,6 +68,8 @@ public sealed class TagDimension
     public string Name { get; set; } = "";
     public bool IsMultiSelect { get; set; }
     public Dictionary<int, string> Values { get; set; } = new() { [0] = "none" };
+    /// <summary>Stable display order for values. IDs remain the persisted identity.</summary>
+    public List<int> ValueOrder { get; set; } = [0];
     [JsonExtensionData] public Dictionary<string, JsonElement>? UnknownFields { get; set; }
 }
 

@@ -1,8 +1,43 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0a1` (alpha)
+**Current application patch:** `2.1.0b1` (beta)
+### 2.1.0b1 (beta)
+- Reduced game-detail note typography to a compact secondary scale, keeping it visually distinct from the title.
+- Added persistent ordering for tag values (savedata v5). Multi-select values expose **Move earlier**/**Move later** in their dark right-click menu; the chosen order is used by the global editor, first-level picker, Library cards, detail view and filter popup.
+- The filter popup now lists all single-select dimensions together, followed by all multi-select dimensions.
+- Replaced game deletion's native message box with a roomy dark confirmation dialog. Its Chinese prompt names the game number and title, offers Confirm and a default/cancel "never mind" action, and treats Enter as cancel.
+- Made automatic launcher selection passive. Startup first opens the last versioned executable without scanning release files; a post-first-frame background scan exposes an explicit **Update to <version>** Version-menu item when a newer eligible target exists. First installation remains self-bootstrapping.
 
 ## Patch history
+
+### 2.1.0b (beta)
+
+- Promoted the 2.1.0 preview line to a GitHub beta prerelease for user testing. Beta builds retain the Debug diagnostic threshold and are recognized by the fixed Launcher's version-policy resolver as `Launcher_<version>b.exe`; where an alpha and beta share a core version, beta is the eligible latest preview.
+- Completed the post-a7 Library-card fixes without changing savedata: cards reserve a full two-line single-select chip strip, eliminating the internal vertical scrollbar when three selected dimensions span two lines. Card height remains uniform.
+- Completed tag/editor cleanup: detail chips use the WinForms preferred single-line width so mixed CJK/Latin tails are not clipped; whole chips move to a new row rather than wrapping inside a chip. Both global and first-level edit pages group all single-select dimensions before all multi-select dimensions, while preserving original schema indexes for saved values. Dark right-click menus now grow vertically for every action rather than collapsing into a one-line black strip.
+
+### 2.1.0a7 (alpha)
+
+- Made Library cards a uniform measured height. Every card now reserves two title lines regardless of its own title length, and its ID label has a measured safe height so multi-digit game numbers cannot be clipped.
+- Corrected the detail-tag interpretation: purple and orange chips are now strictly one-line, grow to fit their complete text, and are moved as whole boxes to a subsequent row by the greedy/indented row layouts. They no longer split a dimension name, colon, or value inside a box.
+
+### 2.1.0a6 (alpha)
+
+- Reworked Library-card lower layout around measured content rather than a tall fixed reservation. The title now sits directly above the compact single-select strip, and each selected multi-select dimension receives exactly one compact, independent orange-chip row. A long first dimension scrolls inside its own row instead of taking the second dimension's row.
+- Strengthened detail tag sizing in preparation for the subsequent single-line chip rule; a6 calculated final chip heights explicitly rather than relying on stale WinForms AutoSize state.
+- The version handoff safety from `2.1.0a5` remains in force: fixed `Launcher.exe` defers state restoration to the selected versioned executable and skips state persistence while handing off. A fixed launcher with an explicitly pinned version will intentionally continue to start that pinned file; run `Launcher_2_1_0a6.exe` directly or select **Automatically select latest version** to test this alpha.
+
+### 2.1.0a5 (alpha)
+
+- Completed the fullscreen handoff correction. The launcher now defers both maximized and fullscreen restoration until it has confirmed it is the final selected executable, and it does not persist a transient non-fullscreen state while handing off. This addresses the remaining full-screen flash and title-bar/maximized result reported after 2.1.0a4.
+- Library multi-select display reserves one non-wrapping row per chosen dimension, preventing one dimension's overflow from hiding the following dimension.
+- Detail tag labels now explicitly insert display line breaks when their measured text exceeds the available chip width, ensuring both single- and multi-select strings are visible. Multi descriptions keep their common colon-aligned column.
+
+### 2.1.0a4 (alpha)
+
+- Deferred fullscreen restoration until launcher-policy handoff has completed in the final executable. Log analysis showed the fixed `Launcher.exe` was entering fullscreen in its constructor before its Load-time handoff, causing the reported one-time small-window/fullscreen flash.
+- Library cards now reserve two rows for single-select tags and two independent rows for the selected multi-select dimensions; the remaining space belongs to the title. The card height was increased to prevent long titles and multi tags being clipped.
+- Detail multi-select descriptions now use a shared right-aligned colon column and values use a shared left-aligned, indented column. Detail tag chips wrap their text rather than truncating it.
 
 ### 2.1.0a (alpha)
 
@@ -18,6 +53,13 @@
 - Savedata format v4 extends Library card settings from one to two independently selected multi-select dimensions, while retaining and migrating the v3 scalar selection for compatibility.
 - Enlarged the fixed card cover by 1.2×, compressed the right-side status-lamp width and lower single-select strip, and reserved the gained lower-card space for multi-select chips.
 - Made multi-select support explicit in both edit layers: first-level game edit labels every multi-select selection row and provides its orange one-or-more value picker; second-level management labels its shared dimension area and explains right-click type/value operations.
+
+### 2.1.0a3 (alpha)
+
+- Fixed the custom dark edit/delete context menu items being allocated at the native default width, which truncated their labels.
+- Global-management mutations now restore the previous vertical scroll offset after rebuilding the page, so adding or editing a dimension value remains at the row being worked on. The same restoration applies to save roots, region commands, statuses, button icons, dimension changes and their legacy management controls.
+- Detail tags now pack single-select chips greedily across each line. Multi-select tags use one description chip per dimension and individually wrapped, indented value chips.
+- Library cards are slightly taller to show selected multi-select dimensions. When none are explicitly chosen, the first two available multi-select dimensions are selected automatically.
 
 ### 2.0.2a (alpha)
 

@@ -1,7 +1,7 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.1.0a1 (alpha)
-**Savedata format:** v4
+**Current application specification:** 2.1.0b1 (beta)
+**Savedata format:** v5
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
 ## 1. Product boundary and platform
@@ -23,7 +23,7 @@ The compiled assembly name is `GameShelf.exe`. The distributable launcher conven
 
 - `Launcher.exe` is the fixed local launch target; a shortcut may point to it.
 - `Launcher_<version>.exe` is the versioned copy, for example `Launcher_2_0_1.exe`.
-- An alpha version has an `a` suffix. Alpha packages are Debug diagnostics builds; a version with no suffix is a stable Release package.
+- Alpha and beta versions have an `a` or `b` suffix. Both preview package types retain Debug diagnostics; a version with no suffix is a stable Release package.
 
 `AppContext.BaseDirectory` is the application root. The executable must remain beside its data folders:
 
@@ -59,15 +59,15 @@ The user-owned `savedata/` directory is never included in source-control or rele
 
 ## 4. Persistent data contract
 
-`savedata/gameshelf.json` serializes `AppData`. Its current `Version` is `4`.
+`savedata/gameshelf.json` serializes `AppData`. Its current `Version` is `5`.
 
 | Area | Stored data |
 | --- | --- |
-| `Settings` | UI language, persisted launcher-version policy, last supported page and selected game, normal/fullscreen window state and bounds, title/status/tag filters, Library-card dimension choices, custom button vectors, and transient process identities. |
+| `Settings` | UI language, persisted launcher-version policy and last versioned executable, last supported page and selected game, normal/fullscreen window state and bounds, title/status/tag filters, Library-card dimension choices, custom button vectors, and transient process identities. |
 | `RcRootPath` | Absolute path of the common `rc` game-resource root. |
 | `SaveRoots` | Named Windows path templates used as save roots. |
 | `RegionCommands` / `RegionAliases` | Region-launch commands and their short display aliases. |
-| `TagSchema` | Ordered single-select or multi-select dimensions, each with an integer ID and mapped display values. |
+| `TagSchema` | Ordered single-select or multi-select dimensions, each with an integer ID, mapped display values, and a persisted value order (multi-select values can be moved earlier/later). |
 | `PlayStatuses` / `GameStatuses` | Ordered status definitions: ID, display name, RGB/hex colour, white vector icon, default flag, and (for system game statuses) role. |
 | `Games` | Individual game records: ID, title, managed cover filename, note, relative game/save paths, selected save root, statuses, region command, one value per single-select dimension, and one-or-more values per multi-select dimension. |
 
@@ -90,10 +90,11 @@ The presentation is permanently dark; there is no day/night theme or runtime the
 GameShelf uses the normal native Windows title bar. Windows owns caption dragging, system menu, Snap layouts, resize borders and minimize/maximize/close controls. Directly below it is a native Windows menu bar:
 
 - The menu is collapsed by default and reveals when the pointer reaches the top reveal band. It retracts after the pointer leaves the menu area; this works in normal and F11 fullscreen windows.
-- **Version** (click or `Alt+V` after revealing the menu) stores one launch policy and restarts into its resolved executable. It offers **Automatically select latest version**, **Automatically select latest stable version**, each available stable *major.minor* series, and at most one alpha.
+- **Version** (click or `Alt+V` after revealing the menu) stores one launch policy. It offers **Automatically select latest version**, **Automatically select latest stable version**, each available stable *major.minor* series, and at most one eligible preview (alpha or beta).
 - A stable series entry such as `2.0` resolves to the highest available stable patch in that series at the moment it is selected, for example `Launcher_2_0_1.exe`. The resulting exact patch is pinned, so even a later `2.0.2` does not replace it automatically.
-- An alpha is shown only when its core version is strictly newer than the highest available stable release. For example, `2.0.1a` is shown with `2.0.0`, but is hidden when stable `2.0.1` exists. Selecting an alpha pins that exact alpha version.
-- The persisted launcher policy is resolved during form loading, before the first paint. A fixed `Launcher.exe` can therefore hand off to the chosen versioned executable without a visible start/close/start flash.
+- Automatic policies are passive: startup first opens the last versioned executable that actually ran, without enumerating release files. After the first page is shown, a background scan discovers the eligible automatic target. If it is newer, the Version menu exposes **Update to <version>**; only choosing that item restarts the launcher. A first installation with no remembered version performs one bootstrap scan.
+- A preview is shown only when its core version is strictly newer than the highest available stable release. For example, `2.0.1a` is shown with `2.0.0`, but is hidden when stable `2.0.1` exists. When alpha and beta share a core version, beta wins. Selecting a preview pins that exact executable.
+- The persisted launcher policy is resolved during form loading, before the first paint. All persisted window-state restoration is deliberately deferred until that resolution succeeds in the final executable. The fixed `Launcher.exe` skips saving state while handing off, so it cannot overwrite a persisted fullscreen request or briefly enter fullscreen/maximized before the chosen version takes over.
 - **Language** (click or `Alt+L`) persists the chosen UI language and restarts the application.
 - The same native menu and reveal behaviour remain available in F11 fullscreen.
 
@@ -116,15 +117,16 @@ The last page is persisted only for Library and game detail. If the launcher is 
 
 ## 7. Library / Home
 
-Library shows responsive game cards. In normal mode, only a left click opens a game detail page. In game-management mode, right-clicking a card performs the management context action, including deletion; cards do not open games in that mode.
+Library shows responsive game cards. In normal mode, only a left click opens a game detail page. In game-management mode, right-clicking a card performs the management context action, including deletion; cards do not open games in that mode. Deletion uses a dark GameShelf confirmation dialog that names the game number and title, offers Confirm and a default/cancel "never mind" action, and treats Enter as cancel.
 
-Each card has a fixed portrait 3:4 cover at upper-left, enlarged by 1.2× from the prior card layout. Its two status lamps stack vertically to the cover's right and together match the cover height. The decimal game number is below the cover, followed by a title that supports two lines and renders a literal `\\n` as a line break. The compact single-select strip sits under the title; the larger multi-select strip sits below it. The Library may show up to three selected single-select dimensions and two selected multi-select dimensions; every multi value uses its own orange chip, while single chips use purple. Filtering always considers every dimension.
+Each card has a fixed portrait 3:4 cover at upper-left, enlarged by 1.2× from the prior card layout. Its two status lamps stack vertically to the cover's right and together match the cover height. The decimal game number is below the cover, with a measured height that safely holds large multi-digit IDs. Every card reserves exactly two title lines even when its title uses only one, so all card heights remain uniform. The compact two-line single-select strip follows immediately, followed by two separate compact, single-line rows for the chosen multi-select dimensions. An individual multi row scrolls horizontally on overflow and never consumes the next dimension's row. The title renders a literal `\\n` as a line break. Every multi value uses its own orange chip, while single chips use purple. When no multi-display selection has been stored, the first two multi-select dimensions are selected automatically. Filtering always considers every dimension.
 
 The title search field sits directly left of the rightmost filter control and combines with every other condition using AND; its adjacent clear button removes the search text. The filter control opens a modal filter:
 
 - `none` values cannot be selected.
 - Multiple values within one single-select dimension are ORed; different dimensions are ANDed.
 - A multi-select dimension matches when the selected values intersect that game's selected values.
+- Single-select and multi-select tag-dimension sections are contiguous groups in that order, with their existing purple/orange tile colours.
 - Play status and game status are independent single-choice filters.
 - Tag, play-status and game-status selection tiles use distinct colours.
 - Clear removes all conditions.
@@ -140,7 +142,7 @@ Entering game detail always refreshes the selected game path state. The page is 
 2. **Section 2** — note (**2A**) and play/game lamps (**2B**) split at the horizontal centre. The lamps appear side-by-side, retain their artwork aspect ratio, and match the note reservation height.
 3. **Section 3** — game path, save root, save path, region command and export action. Long paths wrap at Windows path separators instead of creating horizontal scrolling.
 
-Tag chips use one row per value and display `Dimension : mapped value`, including spaces around the colon. Their width measures to their complete text.
+Every detail tag chip is a measured single-line box: its width grows to contain its complete dimension/value string, with no internal text wrapping or ellipsis. Single-select chips use a greedy left-to-right layout and move an entire chip to the next row only before exceeding the right-side section width. Multi-select values group by dimension: one orange `Dimension :` chip is right-aligned in a common description column, followed by its individual orange value chips in a common left-aligned value column. Values that do not fit beside a preceding chip move as whole chips to an indented next row.
 
 ### 8.1 Path-derived state
 
@@ -169,11 +171,11 @@ Global management owns:
 - region commands (full command plus required short alias);
 - play and game statuses, including RGB/hex colour and vector artwork;
 - play-status ordering through adjacent two-way swaps;
-- a labelled single-select/multi-select dimension management area, including mapped values and a right-click type conversion action;
+- a labelled single-select/multi-select dimension management area, including mapped values and a right-click type conversion action; multi-select values additionally support adjacent earlier/later order swaps;
 - the Library-card display-dimension selection; and
 - all logical action-button icons.
 
-Property collections are tiles rather than a fixed list: simple properties use one tile per value plus an Add tile; tag dimensions are scrollable rows with an Add-value tile at the row end and an Add-dimension tile at the column end. A dimension's context menu can change it between single-select and multi-select while preserving a compatible game value. Left click edits a value. Right click opens only the edit/delete context menu (it must not also open the edit dialog). Every edit/delete context menu uses the enlarged dark GameShelf menu renderer rather than the default light menu appearance. Management sections shrink to their content height instead of claiming an entire viewport.
+Property collections are tiles rather than a fixed list: simple properties use one tile per value plus an Add tile; tag dimensions are scrollable rows with an Add-value tile at the row end and an Add-dimension tile at the column end. A dimension's context menu can change it between single-select and multi-select while preserving a compatible game value. Left click edits a value. Right click opens only the edit/delete context menu (it must not also open the edit dialog). Every edit/delete context menu uses the enlarged dark GameShelf menu renderer, with an explicit menu width sized for complete labels, rather than the default light menu appearance. Management sections shrink to their content height instead of claiming an entire viewport. A management-page refresh caused by any add, edit, delete, reorder, reset or type-change preserves its current vertical scroll position.
 
 The vector icon editor previews existing custom artwork or the logical built-in glyph when no custom vector is saved. It supports freehand line, straight line, hollow circle, hollow triangle, hollow rectangle, and Paint-style flood fill of an enclosed region. New geometry can be adjusted immediately after creation. Vectors render as white marks over the selected coloured background.
 
@@ -187,7 +189,7 @@ Launch resolves the stored relative game path against `RcRootPath`. A direct lau
 
 Logs are written to `log/gameshelf-YYYY-MM-DD.log` next to the executable. Files older than 30 days are removed at startup. Levels are `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, and `None`.
 
-- Alpha builds default to `Debug`.
+- Alpha and beta builds default to `Debug`.
 - Stable builds default to `Information`.
 - The `GAMESHELF_LOG_LEVEL` environment variable overrides the threshold for a diagnostic run.
 
