@@ -26,6 +26,7 @@ public sealed class MainForm : Form
     private Localizer _t;
     private readonly BufferedFlowLayoutPanel _content = new() { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(42) };
     private readonly Panel _top = new() { Dock = DockStyle.Top, Height = 108 };
+    private VirtualGameCardPanel? _libraryCards;
     private readonly List<EventHandler> _topResizeHandlers = [];
     private int? _selectedId;
     private string _page = "library";
@@ -93,6 +94,7 @@ public sealed class MainForm : Form
         ResizeBegin += (_, _) => BeginInteractiveResize();
         ResizeEnd += (_, _) => EndInteractiveResize();
         Resize += (_, _) => QueueResponsiveLayout();
+        _content.Scroll += (_, _) => RefreshLibraryCardViewport();
         _processTracker.Start();
     }
 
@@ -815,6 +817,7 @@ public sealed class MainForm : Form
     private void RegisterTopResize(EventHandler handler) { _top.Resize += handler; _topResizeHandlers.Add(handler); }
     private void Clear()
     {
+        _libraryCards = null;
         foreach (Control control in _content.Controls.Cast<Control>().ToArray()) control.Dispose();
         _content.Controls.Clear();
     }
@@ -896,6 +899,18 @@ public sealed class MainForm : Form
         var step = Math.Max(S(24), Math.Max(1, SystemInformation.MouseWheelScrollLines) * S(16));
         var next = Math.Clamp(bar.Value - notches * step, bar.Minimum, Math.Max(bar.Minimum, bar.Maximum - bar.LargeChange + 1));
         if (next != bar.Value) bar.Value = next;
+        RefreshLibraryCardViewport();
+    }
+    private void RefreshLibraryCardViewport()
+    {
+        if (_page != "library" || _libraryCards is null || _libraryCards.IsDisposed) return;
+        var top = Math.Max(0, _content.VerticalScroll.Value - _content.Padding.Top);
+        _libraryCards.UpdateViewport(top, Math.Max(1, _content.ClientSize.Height));
+    }
+    private void ScheduleLibraryCardViewportRefresh()
+    {
+        if (!IsHandleCreated) return;
+        BeginInvoke((Action)(() => { if (!IsDisposed) RefreshLibraryCardViewport(); }));
     }
     private Panel FieldCard(Control field, bool tagField = false)
     {
@@ -909,26 +924,46 @@ public sealed class MainForm : Form
         var statusChanged = _store.RefreshAllGamePathStatuses();
         if (statusChanged) _store.Save();
         _page = "library"; BuildTop(!_management);
-        if (rebuildCards || statusChanged || !_content.Controls.OfType<BufferedFlowLayoutPanel>().Any()) PopulateLibraryCards();
+        if (rebuildCards || statusChanged || _libraryCards is null || _libraryCards.IsDisposed) PopulateLibraryCards();
         else ApplyLibraryManagementMode();
     }
     private void PopulateLibraryCards()
     {
         if (_page != "library") return;
         Clear();
-        var grid = new BufferedFlowLayoutPanel { Width = _content.ClientSize.Width - 60, AutoSize = true, WrapContents = true };
-        grid.SuspendLayout();
-        foreach (var game in FilteredGames().OrderBy(game => game.Id)) grid.Controls.Add(GameCard(game));
-        grid.ResumeLayout(true);
+        var games = FilteredGames().OrderBy(game => game.Id).ToList();
+        var grid = new VirtualGameCardPanel(games, GameCard, ConfigureLibraryCard)
+        {
+            Width = Math.Max(S(320), _content.ClientSize.Width - _content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - S(8)),
+            BackColor = _content.BackColor
+        };
+        grid.ConfigureLayout(LibraryCardSize(), new Padding(S(16)));
+        _libraryCards = grid;
         _content.Controls.Add(grid);
         EnableWheelScroll(grid);
+        ScheduleLibraryCardViewportRefresh();
+    }
+    private Size LibraryCardSize()
+    {
+        using var titleFont = new Font(Font.FontFamily, S(20), FontStyle.Bold);
+        using var idFont = new Font(Font.FontFamily, S(22), FontStyle.Bold);
+        var idTop = S(278); var idHeight = Math.Max(S(38), TextRenderer.MeasureText("0123456789", idFont).Height + S(4));
+        var titleTop = idTop + idHeight; var titleHeight = Math.Max(S(64), TextRenderer.MeasureText("Ag\nAg", titleFont).Height + S(8));
+        var singleHeight = S(80); var multiRowHeight = S(42); var multiHeight = multiRowHeight * 2 + S(6);
+        var singleTop = titleTop + titleHeight + S(3); var multiTop = singleTop + singleHeight + S(4);
+        return new Size(S(390), multiTop + multiHeight + S(9));
+    }
+    private void ConfigureLibraryCard(Control card)
+    {
+        if (card is Panel panel && panel.Tag is GameEntry) panel.BackColor = Color.FromArgb(38, 42, 42);
+        foreach (var control in Descendants(card)) control.Cursor = _management ? Cursors.Default : Cursors.Hand;
+        EnableWheelScroll(card);
     }
     private void ApplyLibraryManagementMode()
     {
         foreach (var card in Descendants(_content).OfType<Panel>().Where(control => control.Tag is GameEntry))
         {
-            card.BackColor = Color.FromArgb(38, 42, 42);
-            foreach (var control in Descendants(card)) control.Cursor = _management ? Cursors.Default : Cursors.Hand;
+            ConfigureLibraryCard(card);
         }
     }
     private IEnumerable<GameEntry> FilteredGames()
@@ -971,19 +1006,14 @@ public sealed class MainForm : Form
     }
     private Control BuildGameCard(GameEntry game)
     {
-        var cardWidth = S(390); var baseColor = Color.FromArgb(38, 42, 42);
+        var cardSize = LibraryCardSize(); var cardWidth = cardSize.Width; var baseColor = Color.FromArgb(38, 42, 42);
         using var cardTitleFont = new Font(Font.FontFamily, S(20), FontStyle.Bold);
         using var cardIdFont = new Font(Font.FontFamily, S(22), FontStyle.Bold);
-        // Every card reserves the same two title lines, even when a title only
-        // needs one. This keeps card bottoms aligned and protects large IDs.
         var idTop = S(278); var idHeight = Math.Max(S(38), TextRenderer.MeasureText("0123456789", cardIdFont).Height + S(4));
         var titleTop = idTop + idHeight; var titleHeight = Math.Max(S(64), TextRenderer.MeasureText("Ag\nAg", cardTitleFont).Height + S(8));
-        // Three displayed single-select dimensions may occupy two chip rows.
-        // Reserve both rows rather than showing a vertical scrollbar inside a
-        // card; all cards use this same height to retain a uniform grid.
         var singleHeight = S(80); var multiRowHeight = S(42); var multiHeight = multiRowHeight * 2 + S(6);
-        var singleTop = titleTop + titleHeight + S(3); var multiTop = singleTop + singleHeight + S(4); var cardHeight = multiTop + multiHeight + S(9);
-        var card = new Panel { Width = cardWidth, Height = cardHeight, Margin = new Padding(S(16)), BorderStyle = BorderStyle.FixedSingle, AccessibleName = game.Title, BackColor = baseColor, Tag = game };
+        var singleTop = titleTop + titleHeight + S(3); var multiTop = singleTop + singleHeight + S(4);
+        var card = new Panel { Width = cardWidth, Height = cardSize.Height, Margin = Padding.Empty, BorderStyle = BorderStyle.FixedSingle, AccessibleName = game.Title, BackColor = baseColor, Tag = game };
         var imageHeight = S(263); var imageWidth = imageHeight * 3 / 4; var rightLeft = S(9) + imageWidth + S(10); var rightWidth = cardWidth - rightLeft - S(9);
         var image = new PictureBox { Left = S(9), Top = S(9), Width = imageWidth, Height = imageHeight, SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), Cursor = _management ? Cursors.Default : Cursors.Hand };
         var statusGap = S(7); var statusHeight = (imageHeight - statusGap) / 2;
@@ -1947,6 +1977,88 @@ public sealed class MainForm : Form
         f.Controls.AddRange([label, box, ok]); f.AcceptButton = ok;
         return f.ShowDialog() == DialogResult.OK ? box.Text : null;
     }
+/// <summary>
+/// Fixed-grid Library surface that realizes only card rows around its visible
+/// viewport. This prevents a large Library from allocating a native control
+/// handle and cover bitmap for every game at once.
+/// </summary>
+public sealed class VirtualGameCardPanel : Panel
+{
+    private readonly IReadOnlyList<GameEntry> _games;
+    private readonly Func<GameEntry, Control> _createCard;
+    private readonly Action<Control> _configureCard;
+    private readonly Dictionary<int, Control> _realized = [];
+    private Size _cardSize;
+    private Padding _cardMargin;
+    private int _columns = 1;
+    private int _rows;
+    private int _rowStride = 1;
+    private int _viewportTop = -1;
+    private int _viewportHeight = -1;
+    private const int OverscanRows = 2;
+
+    public VirtualGameCardPanel(IReadOnlyList<GameEntry> games, Func<GameEntry, Control> createCard, Action<Control> configureCard)
+    {
+        _games = games; _createCard = createCard; _configureCard = configureCard;
+        DoubleBuffered = true;
+        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        UpdateStyles();
+    }
+
+    public void ConfigureLayout(Size cardSize, Padding cardMargin)
+    {
+        _cardSize = cardSize; _cardMargin = cardMargin;
+        _columns = Math.Max(1, (Math.Max(1, Width) - _cardMargin.Left - _cardMargin.Right) / Math.Max(1, _cardSize.Width + _cardMargin.Horizontal));
+        _rows = (int)Math.Ceiling(_games.Count / (double)_columns);
+        _rowStride = Math.Max(1, _cardSize.Height + _cardMargin.Vertical);
+        Height = _rows == 0 ? 1 : _cardMargin.Top + _rows * _rowStride + _cardMargin.Bottom;
+        _viewportTop = -1; _viewportHeight = -1;
+        ClearRealized();
+    }
+
+    public void UpdateViewport(int top, int height)
+    {
+        if (_rows == 0) return;
+        top = Math.Max(0, top); height = Math.Max(1, height);
+        if (_viewportTop == top && _viewportHeight == height) return;
+        _viewportTop = top; _viewportHeight = height;
+        var firstRow = Math.Max(0, top / _rowStride - OverscanRows);
+        var lastRow = Math.Min(_rows - 1, (top + height) / _rowStride + OverscanRows);
+        var first = firstRow * _columns;
+        var last = Math.Min(_games.Count - 1, (lastRow + 1) * _columns - 1);
+        SuspendLayout();
+        try
+        {
+            foreach (var index in _realized.Keys.Where(index => index < first || index > last).ToArray())
+            {
+                var card = _realized[index]; _realized.Remove(index); Controls.Remove(card); card.Dispose();
+            }
+            for (var index = first; index <= last; index++)
+            {
+                if (_realized.ContainsKey(index)) continue;
+                var row = index / _columns; var column = index % _columns;
+                var card = _createCard(_games[index]);
+                card.Margin = Padding.Empty;
+                card.Bounds = new Rectangle(_cardMargin.Left + column * (_cardSize.Width + _cardMargin.Horizontal), _cardMargin.Top + row * _rowStride, _cardSize.Width, _cardSize.Height);
+                _realized[index] = card; Controls.Add(card); _configureCard(card);
+            }
+        }
+        finally { ResumeLayout(false); }
+    }
+
+    private void ClearRealized()
+    {
+        foreach (var card in _realized.Values) { Controls.Remove(card); card.Dispose(); }
+        _realized.Clear();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) ClearRealized();
+        base.Dispose(disposing);
+    }
+}
+
 }
 
 public sealed record Selection<T>(T Value, string Text)

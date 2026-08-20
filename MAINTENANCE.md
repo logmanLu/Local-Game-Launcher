@@ -6,7 +6,7 @@
 - Added the protected blue system game status **Backuped**: the game is locally available and has a backup. It uses the Storaged blue background with a filled white cloud; Storaged continues to use an outline cloud.
 - Replaced the former one-way executable status refresh with the complete path-state matrix: invalid paths map Installed locally → In other machine and Backuped → Storaged; valid paths map In other machine/Data missing → Installed locally and Storaged → Backuped. Every other state remains unchanged.
 - A double-click on a valid detail game-status lamp now alternates **Installed locally** and **Backuped**. On an invalid path it continues to cycle **In other machine**, **Data missing** and **Storaged**. The page keeps its current scroll position.
-- Virtualized Library cards were assessed but intentionally deferred: b4 eliminates the forced-layout/repaint behaviour first. A future virtualization pass should create only cards near the visible viewport when the real library size warrants it.
+- Implemented a virtualized fixed Library grid. It realizes only the viewport plus two buffer rows above and below; offscreen card controls and their cover bitmaps are disposed. This bounds native-control/GDI use for very large Libraries while keeping scroll-time layout work local to entering/leaving rows.
 
 ### 2.1.0b4 (beta)
 
