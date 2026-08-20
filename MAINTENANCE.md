@@ -7,6 +7,7 @@
 - Replaced the former one-way executable status refresh with the complete path-state matrix: invalid paths map Installed locally → In other machine and Backuped → Storaged; valid paths map In other machine/Data missing → Installed locally and Storaged → Backuped. Every other state remains unchanged.
 - A double-click on a valid detail game-status lamp now alternates **Installed locally** and **Backuped**. On an invalid path it continues to cycle **In other machine**, **Data missing** and **Storaged**. The page keeps its current scroll position.
 - Implemented a virtualized fixed Library grid. It realizes only the viewport plus two buffer rows above and below; offscreen card controls and their cover bitmaps are disposed. This bounds native-control/GDI use for very large Libraries while keeping scroll-time layout work local to entering/leaving rows.
+- Returning from game detail now retains the in-memory virtual Library grid and its vertical position. The launcher compares card presentation fingerprints and rebuilds only changed realized cards; a changed filter/order/schema/window size instead causes the required full virtual-grid refresh. This cache is deliberately session-only and is not written to savedata.
 
 ### 2.1.0b4 (beta)
 

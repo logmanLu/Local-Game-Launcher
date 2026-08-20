@@ -25,6 +25,9 @@ public sealed class MainForm : Form
     private readonly GameProcessTracker _processTracker;
     private Localizer _t;
     private readonly BufferedFlowLayoutPanel _content = new() { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(42) };
+    private sealed record LibraryCardSnapshot(string PresentationKey, List<int> GameIds, List<string> GameFingerprints);
+    private LibraryCardSnapshot? _libraryCardSnapshot;
+    private int _cachedLibraryScrollY;
     private readonly Panel _top = new() { Dock = DockStyle.Top, Height = 108 };
     private VirtualGameCardPanel? _libraryCards;
     private readonly List<EventHandler> _topResizeHandlers = [];
@@ -815,11 +818,25 @@ public sealed class MainForm : Form
         _top.Controls.Clear();
     }
     private void RegisterTopResize(EventHandler handler) { _top.Resize += handler; _topResizeHandlers.Add(handler); }
-    private void Clear()
+    private void Clear(bool preserveLibrary = false)
     {
-        _libraryCards = null;
+        if (preserveLibrary && _libraryCards is { IsDisposed: false } && _libraryCards.Parent == _content)
+        {
+            _cachedLibraryScrollY = _content.VerticalScroll.Value;
+            _content.Controls.Remove(_libraryCards);
+        }
+        else DiscardLibraryCardCache();
         foreach (Control control in _content.Controls.Cast<Control>().ToArray()) control.Dispose();
         _content.Controls.Clear();
+    }
+    private void DiscardLibraryCardCache()
+    {
+        if (_libraryCards is { IsDisposed: false })
+        {
+            _libraryCards.Parent?.Controls.Remove(_libraryCards);
+            _libraryCards.Dispose();
+        }
+        _libraryCards = null; _libraryCardSnapshot = null; _cachedLibraryScrollY = 0;
     }
     private void ShowCurrent() { if (_page == "library") ShowLibrary(); else if (_page == "detail") ShowDetail(); else if (_page == "edit") ShowEdit(); else ShowGlobal(); }
     private float UiScale => Math.Clamp(ClientSize.Width / 1280f, .78f, 1.28f);
@@ -924,8 +941,30 @@ public sealed class MainForm : Form
         var statusChanged = _store.RefreshAllGamePathStatuses();
         if (statusChanged) _store.Save();
         _page = "library"; BuildTop(!_management);
-        if (rebuildCards || statusChanged || _libraryCards is null || _libraryCards.IsDisposed) PopulateLibraryCards();
-        else ApplyLibraryManagementMode();
+        if (!RestoreCachedLibraryCards()) PopulateLibraryCards();
+    }
+    private bool RestoreCachedLibraryCards()
+    {
+        if (_libraryCards is null || _libraryCards.IsDisposed || _libraryCardSnapshot is null) return false;
+        var games = FilteredGames().OrderBy(game => game.Id).ToList();
+        var presentationKey = LibraryPresentationKey();
+        if (!string.Equals(_libraryCardSnapshot.PresentationKey, presentationKey, StringComparison.Ordinal) ||
+            !_libraryCardSnapshot.GameIds.SequenceEqual(games.Select(game => game.Id))) return false;
+        var fingerprints = games.Select(GameCardFingerprint).ToList();
+        var changed = fingerprints.Select((fingerprint, index) => (fingerprint, index))
+            .Where(item => !string.Equals(item.fingerprint, _libraryCardSnapshot.GameFingerprints[item.index], StringComparison.Ordinal))
+            .Select(item => item.index).ToList();
+        _libraryCards.UpdateItems(games, changed);
+        _libraryCardSnapshot = new LibraryCardSnapshot(presentationKey, games.Select(game => game.Id).ToList(), fingerprints);
+        if (_libraryCards.Parent is null) _content.Controls.Add(_libraryCards);
+        else if (_libraryCards.Parent != _content) return false;
+        ApplyLibraryManagementMode();
+        var restoreScroll = _cachedLibraryScrollY;
+        ScheduleLibraryCardViewportRefresh();
+        if (restoreScroll > 0 && IsHandleCreated)
+            BeginInvoke((Action)(() => { if (!IsDisposed && _page == "library") { _content.AutoScrollPosition = new Point(0, restoreScroll); RefreshLibraryCardViewport(); } }));
+        AppLog.Debug("Library", changed.Count == 0 ? "Restored cached Library card grid without rebuilding cards." : $"Restored cached Library grid and refreshed {changed.Count} changed card slots.");
+        return true;
     }
     private void PopulateLibraryCards()
     {
@@ -941,7 +980,34 @@ public sealed class MainForm : Form
         _libraryCards = grid;
         _content.Controls.Add(grid);
         EnableWheelScroll(grid);
+        _cachedLibraryScrollY = 0;
+        _libraryCardSnapshot = new LibraryCardSnapshot(LibraryPresentationKey(), games.Select(game => game.Id).ToList(), games.Select(GameCardFingerprint).ToList());
         ScheduleLibraryCardViewportRefresh();
+    }
+    private string LibraryPresentationKey()
+    {
+        var settings = _store.Data.Settings;
+        var filters = string.Join(";", settings.SelectedTagFilters.OrderBy(pair => pair.Key).Select(pair => $"{pair.Key}:{string.Join(',', pair.Value.Order())}"));
+        var dimensions = string.Join(";", _store.Data.TagSchema.Select(dimension => $"{dimension.DimensionId}:{dimension.Name}:{dimension.IsMultiSelect}:{string.Join(',', OrderedDimensionValues(dimension).Select(pair => $"{pair.Key}={pair.Value}"))}"));
+        var statuses = string.Join(";", _store.Data.PlayStatuses.Concat(_store.Data.GameStatuses).Select(status => $"{status.Id}:{status.Name}:{status.Color}:{status.IconVector}"));
+        return string.Join("\u001e", ClientSize.Width, ClientSize.Height, settings.TitleSearch, settings.SelectedPlayStatusFilter, settings.SelectedGameStatusFilter, filters,
+            string.Join(',', settings.HomeDisplayDimensionIds), string.Join(',', settings.HomeMultiDisplayDimensionIds), dimensions, statuses);
+    }
+    private string GameCardFingerprint(GameEntry game)
+    {
+        var imageStamp = "";
+        try
+        {
+            var imagePath = _store.ImagePath(game);
+            if (!string.IsNullOrEmpty(imagePath) && File.Exists(imagePath))
+            {
+                var info = new FileInfo(imagePath);
+                imageStamp = $"{info.Length}:{info.LastWriteTimeUtc.Ticks}";
+            }
+        }
+        catch { /* a changed/unavailable image simply reloads on the next full grid build */ }
+        var multi = string.Join(";", game.MultiTags.Select(values => string.Join(',', values)));
+        return string.Join("\u001f", game.Id, game.Title, game.ImageFile, imageStamp, game.PlayStatusId, game.GameStatusId, string.Join(',', game.Tags), multi);
     }
     private Size LibraryCardSize()
     {
@@ -1123,7 +1189,8 @@ public sealed class MainForm : Form
     {
         if (_selectedId is null) { ShowLibrary(); return; }
         var scrollY = preserveScroll && _page == "detail" ? _content.VerticalScroll.Value : 0;
-        _page = "detail"; BuildTop(true); Clear(); var g = _store.GetGame(_selectedId.Value);
+        var retainLibrary = _page == "library";
+        _page = "detail"; BuildTop(true); Clear(retainLibrary); var g = _store.GetGame(_selectedId.Value);
         if (_store.RefreshGamePathStatus(g)) _store.Save();
         BuildDetailPageV2(g);
         if (scrollY > 0 && IsHandleCreated)
@@ -1984,7 +2051,7 @@ public sealed class MainForm : Form
 /// </summary>
 public sealed class VirtualGameCardPanel : Panel
 {
-    private readonly IReadOnlyList<GameEntry> _games;
+    private IReadOnlyList<GameEntry> _games;
     private readonly Func<GameEntry, Control> _createCard;
     private readonly Action<Control> _configureCard;
     private readonly Dictionary<int, Control> _realized = [];
@@ -2003,6 +2070,22 @@ public sealed class VirtualGameCardPanel : Panel
         DoubleBuffered = true;
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
         UpdateStyles();
+    }
+
+    /// <summary>Updates the source list without reconstructing unchanged cards.</summary>
+    public void UpdateItems(IReadOnlyList<GameEntry> games, IEnumerable<int> changedIndices)
+    {
+        _games = games;
+        foreach (var index in changedIndices.Distinct().Where(_realized.ContainsKey).ToArray())
+        {
+            var card = _realized[index]; _realized.Remove(index); Controls.Remove(card); card.Dispose();
+        }
+        // Force the viewport pass to recreate changed realized slots, while
+        // offscreen slots naturally use the replacement source on demand.
+        var top = _viewportTop < 0 ? 0 : _viewportTop;
+        var height = _viewportHeight < 0 ? Math.Max(1, ClientSize.Height) : _viewportHeight;
+        _viewportTop = -1; _viewportHeight = -1;
+        UpdateViewport(top, height);
     }
 
     public void ConfigureLayout(Size cardSize, Padding cardMargin)
