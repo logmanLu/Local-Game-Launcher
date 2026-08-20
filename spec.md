@@ -1,6 +1,6 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.1.0b4 (beta)
+**Current application specification:** 2.1.0b5 (beta)
 **Savedata format:** v5
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
@@ -149,13 +149,14 @@ Every detail tag chip is a measured single-line box: its width grows to contain 
 
 ### 8.1 Path-derived state
 
-- A valid game executable forces the built-in green **Installed locally** game status.
-- If the game executable becomes invalid, only that green installed status changes to purple **Data missing**. Red **In other machine**, purple **Data missing**, and blue **Storaged** remain as chosen.
+- Built-in game statuses are **Installed locally** (green filled circle), **In other machine** (red hollow circle), **Data missing** (purple cross), **Storaged** (blue hollow cloud) and **Backuped** (blue filled cloud). They are protected from deletion and their system colours are fixed.
+- When a game executable is invalid, **Installed locally** becomes **In other machine** and **Backuped** becomes **Storaged**. **In other machine**, **Data missing** and **Storaged** otherwise remain unchanged.
+- When a game executable is valid, **In other machine** and **Data missing** become **Installed locally**; **Storaged** becomes **Backuped**. **Installed locally** and **Backuped** otherwise remain unchanged.
 - Save-path availability does not change the game status and does not enable or hide Launch.
 - Valid game/save paths are light green and clickable to open the resolved folder. Invalid paths are bright red and are not clickable.
 - Launch is shown only when the resolved game executable is valid. It is always the normal Launch icon; the Stop-game feature was intentionally removed.
 
-The play-status lamp accepts a double click within 0.8 seconds to move to the next configured play status, cycling at the end. The game-status lamp accepts the same double click only while its executable path is invalid; it cycles **In other machine**, **Data missing**, and **Storaged**. A valid path forms a wall: the forced green installed state never cycles to an invalid state. Status icon meanings come from the stored vectors; defaults include hollow/half/filled squares for play states and filled circle/hollow circle/cross/hollow cloud for game states.
+The play-status lamp accepts a double click within 0.8 seconds to move to the next configured play status, cycling at the end. On a valid executable path, the game-status lamp alternates **Installed locally** and **Backuped**; on an invalid path it cycles **In other machine**, **Data missing**, and **Storaged**. The valid and invalid groups never cross through double-clicking. Status icon meanings come from the stored vectors; defaults include hollow/half/filled squares for play states and filled circle/hollow circle/cross/hollow cloud/filled cloud for game states.
 
 ## 9. Editing modes
 
@@ -163,7 +164,7 @@ The play-status lamp accepts a double click within 0.8 seconds to move to the ne
 
 First-level edit changes one game. It provides boxed interactive text controls for title, note, paths and selectable properties. Image and save/game path selection controls are placed below the normal properties in the scrollable page. Choosing a cover opens a crop/zoom surface before the managed image is saved.
 
-The selected save root, region-command alias and tag values are shown as mapped text; persisted IDs remain internal. Every multi-select dimension has its own clearly labelled `(<name> multi-select)` first-level selection row, using orange mutually-aware checkbox tiles: at least one value is required, and `none` cannot coexist with another value. Play status is not set here because it is changed from the detail lamp. Game status is also absent: it is path-derived and can only be cycled from the detail lamp while unavailable.
+The selected save root, region-command alias and tag values are shown as mapped text; persisted IDs remain internal. Every multi-select dimension has its own clearly labelled `(<name> multi-select)` first-level selection row, using orange mutually-aware checkbox tiles: at least one value is required, and `none` cannot coexist with another value. Play status is not set here because it is changed from the detail lamp. Game status is also absent: it is path-derived and can only be cycled from the detail lamp within its current valid or invalid path group.
 
 ### 9.2 Second-level global management
 

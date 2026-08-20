@@ -143,12 +143,14 @@ public static class Defaults
     public const string OtherMachineRole = "other-machine";
     public const string MissingRole = "missing";
     public const string StoragedRole = "storaged";
+    public const string BackupedRole = "backuped";
     public static string GameStatusColor(string role) => role switch
     {
         InstalledRole => "#53b46b",
         OtherMachineRole => "#d35b5b",
         MissingRole => "#9a72d0",
         StoragedRole => "#4c91d9",
+        BackupedRole => "#4c91d9",
         _ => "#808080"
     };
     public static List<SaveRoot> SaveRoots() =>
@@ -168,6 +170,7 @@ public static class Defaults
         new() { Id = 1, Name = "Installed locally", Color = "#53b46b", IconVector = StatusIconVectors.FilledCircle, SystemRole = InstalledRole },
         new() { Id = 2, Name = "In other machine", Color = "#d35b5b", IconVector = StatusIconVectors.OutlineCircle, SystemRole = OtherMachineRole },
         new() { Id = 3, Name = "Data missing", Color = "#9a72d0", IconVector = StatusIconVectors.Cross, IsDefault = true, SystemRole = MissingRole },
-        new() { Id = 4, Name = "Storaged", Color = "#4c91d9", IconVector = StatusIconVectors.OutlineCloud, SystemRole = StoragedRole }
+        new() { Id = 4, Name = "Storaged", Color = "#4c91d9", IconVector = StatusIconVectors.OutlineCloud, SystemRole = StoragedRole },
+        new() { Id = 5, Name = "Backuped", Color = "#4c91d9", IconVector = StatusIconVectors.FilledCloud, SystemRole = BackupedRole }
     ];
 }

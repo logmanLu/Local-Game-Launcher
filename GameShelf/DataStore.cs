@@ -382,18 +382,31 @@ public sealed class DataStore : IDisposable
     }
 
     /// <summary>
-    /// Only the executable path controls the automatic game-status lamp. A valid
-    /// executable selects Installed locally. An invalid path only changes Installed
-    /// locally into Data missing, preserving user-selected red, purple, and blue states.
+    /// Only the executable path controls the automatic game-status lamp. Valid and
+    /// invalid path states retain their paired local/backup semantics while
+    /// preserving manually selected unrelated unavailable states.
     /// Save-path validity intentionally has no effect here.
     /// </summary>
     public bool RefreshGamePathStatus(GameEntry game)
     {
         var installed = GameStatusByRole(Defaults.InstalledRole);
+        var otherMachine = GameStatusByRole(Defaults.OtherMachineRole);
         var missing = GameStatusByRole(Defaults.MissingRole);
-        if (installed is null || missing is null) return false;
+        var storaged = GameStatusByRole(Defaults.StoragedRole);
+        var backuped = GameStatusByRole(Defaults.BackupedRole);
+        if (installed is null || otherMachine is null || missing is null || storaged is null || backuped is null) return false;
         var valid = PathRules.IsValidGameExe(ResolveGamePath(game.GamePath));
-        var desired = valid ? installed.Id : game.GameStatusId == installed.Id ? missing.Id : game.GameStatusId;
+        var desired = game.GameStatusId;
+        if (valid)
+        {
+            if (game.GameStatusId == otherMachine.Id || game.GameStatusId == missing.Id) desired = installed.Id;
+            else if (game.GameStatusId == storaged.Id) desired = backuped.Id;
+        }
+        else
+        {
+            if (game.GameStatusId == installed.Id) desired = otherMachine.Id;
+            else if (game.GameStatusId == backuped.Id) desired = storaged.Id;
+        }
         if (desired == game.GameStatusId) return false;
         AppLog.Debug("DataStore", $"Game {game.Id} path availability changed game status from {game.GameStatusId} to {desired}.");
         game.GameStatusId = desired;
@@ -415,15 +428,18 @@ public sealed class DataStore : IDisposable
         Save();
     }
 
-    public void SetNextInvalidGameStatus(int gameId)
+    public void SetNextGameStatus(int gameId)
     {
         var game = GetGame(gameId);
-        if (PathRules.IsValidGameExe(ResolveGamePath(game.GamePath))) return;
-        var invalidStatuses = new[] { Defaults.OtherMachineRole, Defaults.MissingRole, Defaults.StoragedRole }
+        var valid = PathRules.IsValidGameExe(ResolveGamePath(game.GamePath));
+        var roles = valid
+            ? new[] { Defaults.InstalledRole, Defaults.BackupedRole }
+            : new[] { Defaults.OtherMachineRole, Defaults.MissingRole, Defaults.StoragedRole };
+        var statuses = roles
             .Select(GameStatusByRole).OfType<GameStatus>().ToList();
-        if (invalidStatuses.Count == 0) return;
-        var index = invalidStatuses.FindIndex(status => status.Id == game.GameStatusId);
-        game.GameStatusId = invalidStatuses[(index + 1 + invalidStatuses.Count) % invalidStatuses.Count].Id;
+        if (statuses.Count == 0) return;
+        var index = statuses.FindIndex(status => status.Id == game.GameStatusId);
+        game.GameStatusId = statuses[(index + 1 + statuses.Count) % statuses.Count].Id;
         Save();
     }
 

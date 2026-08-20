@@ -1,6 +1,13 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0b4` (beta)
+**Current application patch:** `2.1.0b5` (beta)
+### 2.1.0b5 (beta)
+
+- Added the protected blue system game status **Backuped**: the game is locally available and has a backup. It uses the Storaged blue background with a filled white cloud; Storaged continues to use an outline cloud.
+- Replaced the former one-way executable status refresh with the complete path-state matrix: invalid paths map Installed locally → In other machine and Backuped → Storaged; valid paths map In other machine/Data missing → Installed locally and Storaged → Backuped. Every other state remains unchanged.
+- A double-click on a valid detail game-status lamp now alternates **Installed locally** and **Backuped**. On an invalid path it continues to cycle **In other machine**, **Data missing** and **Storaged**. The page keeps its current scroll position.
+- Virtualized Library cards were assessed but intentionally deferred: b4 eliminates the forced-layout/repaint behaviour first. A future virtualization pass should create only cards near the visible viewport when the real library size warrants it.
+
 ### 2.1.0b4 (beta)
 
 - Diagnosed the repeated freeze from the application log: Windows Forms reported Win32 error **1158** (failure while creating a window handle) from `BuildTopCore`. The cause was repeated header/card rebuilds which removed controls without disposing their native handles, compounded by retained top-bar resize handlers.

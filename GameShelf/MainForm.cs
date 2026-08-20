@@ -1343,7 +1343,7 @@ public sealed class MainForm : Form
         var now = DateTime.UtcNow;
         if (_gameStatusClicks.TryGetValue(game.Id, out var previous) && now - previous <= TimeSpan.FromSeconds(.8))
         {
-            _gameStatusClicks.Remove(game.Id); _store.SetNextInvalidGameStatus(game.Id); ShowDetail(true); return;
+            _gameStatusClicks.Remove(game.Id); _store.SetNextGameStatus(game.Id); ShowDetail(true); return;
         }
         _gameStatusClicks[game.Id] = now;
     }
