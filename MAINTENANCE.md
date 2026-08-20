@@ -1,7 +1,9 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0b1` (beta)
+**Current application patch:** `2.1.0b2` (beta)
 ### 2.1.0b1 (beta)
+### 2.1.0b2 (beta)
+- Library game cards are now always ordered by their numeric game ID in ascending order, after every active search/status/tag filter is applied.
 - Reduced game-detail note typography to a compact secondary scale, keeping it visually distinct from the title.
 - Added persistent ordering for tag values (savedata v5). Multi-select values expose **Move earlier**/**Move later** in their dark right-click menu; the chosen order is used by the global editor, first-level picker, Library cards, detail view and filter popup.
 - The filter popup now lists all single-select dimensions together, followed by all multi-select dimensions.
