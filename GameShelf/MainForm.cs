@@ -893,7 +893,7 @@ public sealed class MainForm : Form
         if (_page != "library") return;
         Clear();
         var grid = new FlowLayoutPanel { Width = _content.ClientSize.Width - 60, AutoSize = true, WrapContents = true };
-        foreach (var game in FilteredGames()) grid.Controls.Add(GameCard(game));
+        foreach (var game in FilteredGames().OrderBy(game => game.Id)) grid.Controls.Add(GameCard(game));
         _content.Controls.Add(grid);
         EnableWheelScroll(grid);
     }
