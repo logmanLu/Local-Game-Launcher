@@ -50,15 +50,6 @@ public sealed class AppSettings
     /// <summary>Up to two multi-select dimensions shown on Library cards.</summary>
     public List<int> HomeMultiDisplayDimensionIds { get; set; } = [];
     public Dictionary<string, string> ButtonIcons { get; set; } = [];
-    public Dictionary<int, RunningGameProcess> RunningGameProcesses { get; set; } = [];
-    [JsonExtensionData] public Dictionary<string, JsonElement>? UnknownFields { get; set; }
-}
-
-/// <summary>Volatile process identity persisted only so a restarted GameShelf can reattach safely.</summary>
-public sealed class RunningGameProcess
-{
-    public int ProcessId { get; set; }
-    public long StartTimeUtcTicks { get; set; }
     [JsonExtensionData] public Dictionary<string, JsonElement>? UnknownFields { get; set; }
 }
 

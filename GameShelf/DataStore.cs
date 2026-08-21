@@ -505,7 +505,8 @@ public sealed class DataStore : IDisposable
         Data.Settings.HomeDisplayDimensionIds ??= [];
         Data.Settings.HomeMultiDisplayDimensionIds ??= [];
         Data.Settings.ButtonIcons ??= [];
-        Data.Settings.RunningGameProcesses ??= [];
+        // Process tracking was retired; remove the legacy value instead of round-tripping it via JsonExtensionData.
+        Data.Settings.UnknownFields?.Remove("RunningGameProcesses");
         var dimensionsById = Data.TagSchema.ToDictionary(d => d.DimensionId);
         foreach (var dimensionId in Data.Settings.SelectedTagFilters.Keys.ToList())
         {
