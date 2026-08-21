@@ -22,7 +22,6 @@ public sealed class MainForm : Form
     }
     private readonly DataStore _store;
     private readonly PackageService _packages;
-    private readonly GameProcessTracker _processTracker;
     private Localizer _t;
     private readonly BufferedFlowLayoutPanel _content = new() { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(42) };
     private sealed record LibraryCardSnapshot(string PresentationKey, List<int> GameIds, List<string> GameFingerprints);
@@ -62,7 +61,7 @@ public sealed class MainForm : Form
 
     public MainForm(DataStore store)
     {
-        _store = store; _packages = new PackageService(store); _processTracker = new GameProcessTracker(store); _t = new Localizer(store.Data.Settings.Language);
+        _store = store; _packages = new PackageService(store); _t = new Localizer(store.Data.Settings.Language);
         Text = "GameShelf"; Font = new Font("Segoe UI", 14f, FontStyle.Bold); MinimumSize = new Size(720, 405); KeyPreview = true; StartPosition = FormStartPosition.Manual; FormBorderStyle = FormBorderStyle.Sizable;
         // Defer fullscreen until Load has established whether this executable is
         // the selected launcher version. Otherwise a fixed Launcher.exe can
@@ -71,7 +70,7 @@ public sealed class MainForm : Form
         _selectedId = store.Data.Settings.SelectedGameId;
         _management = false;
         if (_selectedId is not null && store.Data.Games.Any(game => game.Id == _selectedId) && store.Data.Settings.Page is "detail" or "edit") ShowDetail(); else { _selectedId = null; ShowLibrary(); }
-        KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => { _nativeMenuHoverTimer.Stop(); _nativeMenuHoverTimer.Dispose(); DetachNativeMenu(); _processTracker.Dispose(); };
+        KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => { _nativeMenuHoverTimer.Stop(); _nativeMenuHoverTimer.Dispose(); DetachNativeMenu(); };
         _nativeMenuHoverTimer.Tick += (_, _) => UpdateNativeMenuVisibility();
         // Resolve a launcher policy before the first paint. Doing this from
         // Shown made the fixed Launcher.exe briefly appear before it handed
@@ -98,7 +97,6 @@ public sealed class MainForm : Form
         ResizeEnd += (_, _) => EndInteractiveResize();
         Resize += (_, _) => QueueResponsiveLayout();
         _content.Scroll += (_, _) => RefreshLibraryCardViewport();
-        _processTracker.Start();
     }
 
     private void RestoreWindow(bool restoreWindowState = true)
@@ -1482,21 +1480,22 @@ public sealed class MainForm : Form
         try
         {
             AppLog.Information("Launcher", $"Launching game {game.Id} ({game.Title}).");
-            var started = await Task.Run(() =>
+            await Task.Run(() =>
             {
                 var gameDirectory = Path.GetDirectoryName(resolvedGamePath) ?? Environment.CurrentDirectory;
-                if (game.RegionCommandId == 0) return Process.Start(new ProcessStartInfo(resolvedGamePath) { UseShellExecute = true, WorkingDirectory = gameDirectory });
-                else
+                if (game.RegionCommandId == 0)
                 {
-                    var parts = CommandLine.Split(_store.Data.RegionCommands[game.RegionCommandId]);
-                    if (parts.Count == 0) throw new InvalidOperationException("The region command is empty.");
-                    var start = new ProcessStartInfo(parts[0]) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = gameDirectory };
-                    foreach (var argument in parts.Skip(1)) start.ArgumentList.Add(argument);
-                    start.ArgumentList.Add(resolvedGamePath);
-                    return Process.Start(start);
+                    using var direct = Process.Start(new ProcessStartInfo(resolvedGamePath) { UseShellExecute = true, WorkingDirectory = gameDirectory });
+                    return;
                 }
+
+                var parts = CommandLine.Split(_store.Data.RegionCommands[game.RegionCommandId]);
+                if (parts.Count == 0) throw new InvalidOperationException("The region command is empty.");
+                var start = new ProcessStartInfo(parts[0]) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = gameDirectory };
+                foreach (var argument in parts.Skip(1)) start.ArgumentList.Add(argument);
+                start.ArgumentList.Add(resolvedGamePath);
+                using var region = Process.Start(start);
             });
-            _processTracker.TrackLaunchedProcess(game.Id, game.RegionCommandId == 0, started);
             AppLog.Information("Launcher", $"Launch request completed for game {game.Id}.");
         }
         catch (Exception ex) { AppLog.Error("Launcher", $"Could not launch game {game.Id}.", ex); MessageBox.Show("Could not launch game: " + ex.Message, "GameShelf", MessageBoxButtons.OK, MessageBoxIcon.Error); }

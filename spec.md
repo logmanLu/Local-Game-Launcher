@@ -1,6 +1,6 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.1.0b5 (beta)
+**Current application specification:** 2.1.0b6 (beta)
 **Savedata format:** v5
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
@@ -13,7 +13,6 @@ The application is a .NET 10 Windows Forms application targeting 64-bit Windows:
 - Target framework: `net10.0-windows`
 - Runtime: `win-x64`
 - Distribution: self-contained, single-file Windows executable
-- NuGet dependency: `System.Management` (used for optional Windows process diagnostics)
 
 A target computer needs 64-bit Windows and write permission to the executable directory. A separately installed .NET runtime is not required by a published build.
 
@@ -53,7 +52,6 @@ The user-owned `savedata/` directory is never included in source-control or rele
 | `MainForm` | Owns all pages, native menu integration, responsive layouts, navigation, input, edit dialogs and UI-state persistence. Its rebuilt control trees dispose retired controls, resize subscriptions, rounded-corner regions and owned Library cover bitmaps. The Library uses a virtual fixed grid so only cards near the viewport own controls and bitmaps. |
 | `ImageService` | Imports cover images, stores them under `savedata/images`, and supports the image crop workflow. |
 | `PackageService` (`ImportExport.cs`) | Exports/imports individual-game packages and reconciles imported schema entries. |
-| `GameProcessTracker` | Records launched process identities and performs bounded Windows/WMI child-process diagnostics. It does not drive a Stop-game UI. |
 | `Localizer` | Provides the four UI-language dictionaries. Game data remains Unicode and is not translated. |
 | `StatusIconVectors` / icon editor | Stores and renders white vector artwork over coloured button/status backgrounds. |
 
@@ -63,7 +61,7 @@ The user-owned `savedata/` directory is never included in source-control or rele
 
 | Area | Stored data |
 | --- | --- |
-| `Settings` | UI language, persisted launcher-version policy and last versioned executable, last supported page and selected game, normal/fullscreen window state and bounds, title/status/tag filters, Library-card dimension choices, custom button vectors, and transient process identities. |
+| `Settings` | UI language, persisted launcher-version policy and last versioned executable, last supported page and selected game, normal/fullscreen window state and bounds, title/status/tag filters, Library-card dimension choices, and custom button vectors. |
 | `RcRootPath` | Absolute path of the common `rc` game-resource root. |
 | `SaveRoots` | Named Windows path templates used as save roots. |
 | `RegionCommands` / `RegionAliases` | Region-launch commands and their short display aliases. |
@@ -73,7 +71,7 @@ The user-owned `savedata/` directory is never included in source-control or rele
 
 Every persistent DTO supports `JsonExtensionData`. Therefore unknown properties from a newer launcher are round-tripped rather than intentionally discarded. Older formats are backed up in `savedata/backups/` before in-place normalization. A newer savedata version is not downgraded.
 
-The legacy `GameEntry.SaveMethod` field is retained only so older data can be read; current UI and logic use `SaveRootId` and `SavePath`.
+The legacy `GameEntry.SaveMethod` field is retained only so older data can be read; current UI and logic use `SaveRootId` and `SavePath`. The retired `Settings.RunningGameProcesses` field is removed during normalization so it cannot be re-emitted from old savedata.
 
 ### 4.1 Path rules
 
@@ -183,11 +181,9 @@ Property collections are tiles rather than a fixed list: simple properties use o
 
 The vector icon editor previews existing custom artwork or the logical built-in glyph when no custom vector is saved. It supports freehand line, straight line, hollow circle, hollow triangle, hollow rectangle, and Paint-style flood fill of an enclosed region. New geometry can be adjusted immediately after creation. Vectors render as white marks over the selected coloured background.
 
-## 10. Launching and process diagnostics
+## 10. Launching
 
-Launch resolves the stored relative game path against `RcRootPath`. A direct launch uses the game directory as working directory. A configured region command is invoked with the game executable as its final argument.
-
-`GameProcessTracker` records a launched process ID and start time, then may observe/adopt an exact child executable for region-launcher workflows. WMI event monitoring and two bounded post-launch checks are diagnostics only. The persisted identity lets a restarted launcher inspect an already-running tracked process safely. Process tracking does not alter the current UI into a Stop action and must never cause a page-rebuild loop.
+Launch resolves the stored relative game path against `RcRootPath`. A direct launch uses the game directory as working directory. A configured region command is invoked with the game executable as its final argument. After Windows accepts the launch request, GameShelf disposes only its temporary `Process` handle; it does not enumerate, monitor, persist, recover, signal, or otherwise track the game process.
 
 ## 11. Logging and reliability
 
@@ -203,11 +199,12 @@ Unhandled UI, runtime and task exceptions are logged. Database writes use a temp
 
 **Before every `git commit`, `git push`, PR update, merge, or release publication, review and update this `spec.md` so it matches the implementation.** Update `MAINTENANCE.md` with the patch-specific history and troubleshooting note as well.
 
-The normal workflow is:
+The branch and release workflow is:
 
-1. Work on a development branch.
-2. Update implementation, tests/checks, `spec.md`, and `MAINTENANCE.md` together.
-3. Commit and push the branch, then open/update a pull request to `main`.
-4. Build the requested package only after checking and terminating a prior `Launcher` process if necessary.
-5. Produce `Launcher.exe` first, then copy it to `Launcher_<version>.exe`.
-6. Merge only after the requested review/approval. Publish only when expressly requested; never include `savedata/` in source control or release assets.
+1. `develop` is the single long-lived integration branch. Create each alpha or beta work line as `feature/<version>` from `develop`. Git cannot host both a `develop` branch and `develop/<version>` branches, so the `feature/` prefix is intentional.
+2. Before every commit, push, PR update, merge, or release publication, reread this specification and correct any statement that no longer matches the implementation. Update `MAINTENANCE.md` with the patch-specific history and troubleshooting note at the same time.
+3. Commit and push `feature/<version>`, then open or update its pull request to `develop`.
+4. At the end of each alpha or beta version cycle, merge `feature/<version>` into `develop` and delete that feature branch. A beta prerelease, when requested, is built and published from `develop`.
+5. A stable release contains no new implementation work: it is the exact final tested beta commit. When the user designates that beta as stable, merge `develop` into `main` and publish the stable package from that unchanged commit.
+6. Build a requested package only after checking and terminating a prior `Launcher` process if necessary. Produce `Launcher.exe` first, then copy it to `Launcher_<version>.exe`.
+7. Never include `savedata/` in source control or release assets. Publish only when expressly requested.

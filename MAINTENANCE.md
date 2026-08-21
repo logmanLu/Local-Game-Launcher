@@ -1,6 +1,14 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0b5` (beta)
+**Current application patch:** `2.1.0b6` (beta)
+
+### 2.1.0b6 (beta)
+
+- Removed the obsolete `GameProcessTracker` subsystem completely. GameShelf now only submits the selected executable or region command to Windows, then releases its temporary process handle; it does not persist or diagnose game PIDs, subscribe to WMI, recover child processes, or provide any process-control behaviour.
+- Removed the `System.Management` package and the persisted `Settings.RunningGameProcesses` model. Normalization deletes the legacy JSON value so old savedata upgrades cleanly without keeping stale process identities.
+- Corrected `spec.md` to describe the current path/status, virtual Library, Backuped-state and no-process-tracking implementation.
+- Established the repository workflow: `develop` is the integration branch and each test version uses `feature/<version>`. A completed feature merges to `develop` and is deleted; a stable build is an unchanged final beta merged from `develop` to `main`.
+
 ### 2.1.0b5 (beta)
 
 - Added the protected blue system game status **Backuped**: the game is locally available and has a backup. It uses the Storaged blue background with a filled white cloud; Storaged continues to use an outline cloud.
