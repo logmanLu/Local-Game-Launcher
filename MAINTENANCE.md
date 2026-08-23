@@ -1,6 +1,10 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0b7` (beta)
+**Current application patch:** `2.1.0` (stable)
+
+### 2.1.0 (stable)
+
+- Promoted the tested `2.1.0b7` implementation unchanged to the 2.1.0 stable line. The stable package uses Release compilation and the stable informational version, so its default log threshold is `Information`; all functional changes remain those tested in the final beta.
 
 ### 2.1.0b7 (beta)
 
