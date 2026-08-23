@@ -1,6 +1,13 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0b6` (beta)
+**Current application patch:** `2.1.0b7` (beta)
+
+### 2.1.0b7 (beta)
+
+- Detail-page double-click status changes now repaint only the affected status lamp. They no longer recreate the detail page or disturb its scroll location.
+- Library navigation preserves the detached virtual card frame through detail, first-level edit, and second-level edit pages. Return-to-Library reattaches that frame at its prior scroll position before path/status reconciliation runs.
+- Reconciliation now compares the current data after the cached frame is visible, and patches changed realized card regions individually (cover, number/title, status lamps, single-select tags, or multi-select tags). A presentation/filter/order change still correctly rebuilds the virtual grid.
+- Removed duplicate wheel-triggered viewport work. The virtual grid now ignores wheel movement that stays in its existing realized row range, avoiding needless WinForms control layout and GDI churn during normal scrolling.
 
 ### 2.1.0b6 (beta)
 
