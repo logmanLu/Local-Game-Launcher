@@ -924,7 +924,16 @@ public sealed class MainForm : Form
         if (notches == 0) notches = Math.Sign(delta);
         var step = Math.Max(S(24), Math.Max(1, SystemInformation.MouseWheelScrollLines) * S(16));
         var next = Math.Clamp(bar.Value - notches * step, bar.Minimum, Math.Max(bar.Minimum, bar.Maximum - bar.LargeChange + 1));
-        if (next != bar.Value) bar.Value = next;
+        if (next != bar.Value)
+        {
+            bar.Value = next;
+            // Setting VerticalScroll.Value programmatically does not reliably
+            // raise Scroll on every WinForms host.  Tell the virtual grid now;
+            // UpdateViewport itself is a no-op until a row-window boundary is
+            // crossed, so this keeps scrolling cheap while preventing blank
+            // areas after a direction change.
+            RefreshLibraryCardViewport();
+        }
     }
     private void RefreshLibraryCardViewport()
     {
