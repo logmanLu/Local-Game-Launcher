@@ -14,4 +14,4 @@ The local launch target is always `publish/Launcher.exe`; point Windows shortcut
 
 ## Documentation
 
-[MAINTENANCE.md](MAINTENANCE.md) is the authoritative technical reference. It documents the JSON format, path portability model, game-process tracking, UI controls, migration, diagnostics, and publish process.
+[MAINTENANCE.md](MAINTENANCE.md) is the authoritative technical reference. It documents the JSON format, path portability model, UI controls, migration, diagnostics, and publish process. GameShelf deliberately does not track or control game processes after launch.

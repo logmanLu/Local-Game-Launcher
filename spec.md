@@ -1,6 +1,6 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.1.0b4 (beta)
+**Current application specification:** 2.1.0 (stable)
 **Savedata format:** v5
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
@@ -13,7 +13,6 @@ The application is a .NET 10 Windows Forms application targeting 64-bit Windows:
 - Target framework: `net10.0-windows`
 - Runtime: `win-x64`
 - Distribution: self-contained, single-file Windows executable
-- NuGet dependency: `System.Management` (used for optional Windows process diagnostics)
 
 A target computer needs 64-bit Windows and write permission to the executable directory. A separately installed .NET runtime is not required by a published build.
 
@@ -50,10 +49,9 @@ The user-owned `savedata/` directory is never included in source-control or rele
 | `AppLog` | Dependency-free daily rolling diagnostics. Logging failures never stop the launcher. |
 | `Domain` | Persistent DTOs, default statuses/save roots, and data-format version constants. |
 | `DataStore` | Loads, migrates, normalizes, validates and atomically writes `gameshelf.json`; all state changes pass through this layer. |
-| `MainForm` | Owns all pages, native menu integration, responsive layouts, navigation, input, edit dialogs and UI-state persistence. Its rebuilt control trees dispose retired controls, resize subscriptions, rounded-corner regions and owned Library cover bitmaps. |
+| `MainForm` | Owns all pages, native menu integration, responsive layouts, navigation, input, edit dialogs and UI-state persistence. Its rebuilt control trees dispose retired controls, resize subscriptions, rounded-corner regions and owned Library cover bitmaps. The Library uses a virtual fixed grid so only cards near the viewport own controls and bitmaps. |
 | `ImageService` | Imports cover images, stores them under `savedata/images`, and supports the image crop workflow. |
 | `PackageService` (`ImportExport.cs`) | Exports/imports individual-game packages and reconciles imported schema entries. |
-| `GameProcessTracker` | Records launched process identities and performs bounded Windows/WMI child-process diagnostics. It does not drive a Stop-game UI. |
 | `Localizer` | Provides the four UI-language dictionaries. Game data remains Unicode and is not translated. |
 | `StatusIconVectors` / icon editor | Stores and renders white vector artwork over coloured button/status backgrounds. |
 
@@ -63,7 +61,7 @@ The user-owned `savedata/` directory is never included in source-control or rele
 
 | Area | Stored data |
 | --- | --- |
-| `Settings` | UI language, persisted launcher-version policy and last versioned executable, last supported page and selected game, normal/fullscreen window state and bounds, title/status/tag filters, Library-card dimension choices, custom button vectors, and transient process identities. |
+| `Settings` | UI language, persisted launcher-version policy and last versioned executable, last supported page and selected game, normal/fullscreen window state and bounds, title/status/tag filters, Library-card dimension choices, and custom button vectors. |
 | `RcRootPath` | Absolute path of the common `rc` game-resource root. |
 | `SaveRoots` | Named Windows path templates used as save roots. |
 | `RegionCommands` / `RegionAliases` | Region-launch commands and their short display aliases. |
@@ -73,7 +71,7 @@ The user-owned `savedata/` directory is never included in source-control or rele
 
 Every persistent DTO supports `JsonExtensionData`. Therefore unknown properties from a newer launcher are round-tripped rather than intentionally discarded. Older formats are backed up in `savedata/backups/` before in-place normalization. A newer savedata version is not downgraded.
 
-The legacy `GameEntry.SaveMethod` field is retained only so older data can be read; current UI and logic use `SaveRootId` and `SavePath`.
+The legacy `GameEntry.SaveMethod` field is retained only so older data can be read; current UI and logic use `SaveRootId` and `SavePath`. The retired `Settings.RunningGameProcesses` field is removed during normalization so it cannot be re-emitted from old savedata.
 
 ### 4.1 Path rules
 
@@ -119,7 +117,7 @@ The last page is persisted only for Library and game detail. If the launcher is 
 
 Library shows responsive game cards in ascending numeric game-ID order. In normal mode, only a left click opens a game detail page. In game-management mode, right-clicking a card performs the management context action, including deletion; cards do not open games in that mode. Deletion uses a dark GameShelf confirmation dialog that names the game number and title, offers Confirm and a default/cancel "never mind" action, and treats Enter as cancel.
 
-Switching into or out of Library management mode does not recreate the card grid. Existing cards evaluate their click behaviour against the current management flag, preserving the Library scroll position while preventing game entry in management mode. The content and card grid use double-buffered flow surfaces; wheel scrolling updates only the scroll bar position and never forces a full page layout for each wheel tick.
+Switching into or out of Library management mode does not recreate the card grid. Existing cards evaluate their click behaviour against the current management flag, preserving the Library scroll position while preventing game entry in management mode. The content and card grid use double-buffered surfaces. Wheel scrolling explicitly notifies the virtual grid after a programmatic scrollbar update, because Windows Forms does not reliably raise `Scroll` for that operation; it never forces a full page layout for each wheel tick. The fixed Library grid is virtualized: only the rows visible in the viewport plus six rows of overscan above and below are realized as WinForms card controls. This intentionally trades a bounded amount of memory for smoother rapid scrolling. Offscreen cards are disposed with their owned display bitmaps, then recreated on demand when they re-enter the buffered viewport. A 72-entry LRU cache retains decoded 480×640 cover bitmaps; decoding happens on a worker thread and UI controls receive only a cloned completed bitmap. A wheel movement which remains inside the same realized row window performs no control creation, disposal, or layout work. Entering any detail or editing page detaches (rather than disposes) the current virtual grid and records an in-memory presentation snapshot plus its scroll offset. Returning to Library reattaches that cached frame immediately, then reconciles it after the first UI frame. Path availability checks, status derivation, title/tag filtering and numeric sorting use an immutable Library snapshot on a worker thread; only the final status updates and card-region patches run on the UI thread. Matching IDs and presentation layout are retained; only changed realized card regions (cover, title/number, lamps, single tags, or multi tags) are patched. A filter/order/schema/window-layout change safely rebuilds the virtual grid.
 
 Each card has a fixed portrait 3:4 cover at upper-left, enlarged by 1.2× from the prior card layout. Its two status lamps stack vertically to the cover's right and together match the cover height. The decimal game number is below the cover, with a measured height that safely holds large multi-digit IDs. Every card reserves exactly two title lines even when its title uses only one, so all card heights remain uniform. The compact two-line single-select strip follows immediately, followed by two separate compact, single-line rows for the chosen multi-select dimensions. An individual multi row scrolls horizontally on overflow and never consumes the next dimension's row. The title renders a literal `\\n` as a line break. Every multi value uses its own orange chip, while single chips use purple. When no multi-display selection has been stored, the first two multi-select dimensions are selected automatically. Filtering always considers every dimension.
 
@@ -144,18 +142,19 @@ Entering game detail always refreshes the selected game path state. The page is 
 2. **Section 2** — note (**2A**) and play/game lamps (**2B**) split at the horizontal centre. The lamps appear side-by-side, retain their artwork aspect ratio, and match the note reservation height.
 3. **Section 3** — game path, save root, save path, region command and export action. Long paths wrap at Windows path separators instead of creating horizontal scrolling.
 
-Double-clicking either detail status lamp preserves the current vertical scroll position while rebuilding the page with the next allowed status.
+Double-clicking either detail status lamp changes and repaints only the corresponding lamp; it neither rebuilds the detail page nor changes its vertical scroll position.
 Every detail tag chip is a measured single-line box: its width grows to contain its complete dimension/value string, with no internal text wrapping or ellipsis. Single-select chips use a greedy left-to-right layout and move an entire chip to the next row only before exceeding the right-side section width. Multi-select values group by dimension: one orange `Dimension :` chip is right-aligned in a common description column, followed by its individual orange value chips in a common left-aligned value column. Values that do not fit beside a preceding chip move as whole chips to an indented next row.
 
 ### 8.1 Path-derived state
 
-- A valid game executable forces the built-in green **Installed locally** game status.
-- If the game executable becomes invalid, only that green installed status changes to purple **Data missing**. Red **In other machine**, purple **Data missing**, and blue **Storaged** remain as chosen.
+- Built-in game statuses are **Installed locally** (green filled circle), **In other machine** (red hollow circle), **Data missing** (purple cross), **Storaged** (blue hollow cloud) and **Backuped** (blue filled cloud). They are protected from deletion and their system colours are fixed.
+- When a game executable is invalid, **Installed locally** becomes **In other machine** and **Backuped** becomes **Storaged**. **In other machine**, **Data missing** and **Storaged** otherwise remain unchanged.
+- When a game executable is valid, **In other machine** and **Data missing** become **Installed locally**; **Storaged** becomes **Backuped**. **Installed locally** and **Backuped** otherwise remain unchanged.
 - Save-path availability does not change the game status and does not enable or hide Launch.
 - Valid game/save paths are light green and clickable to open the resolved folder. Invalid paths are bright red and are not clickable.
 - Launch is shown only when the resolved game executable is valid. It is always the normal Launch icon; the Stop-game feature was intentionally removed.
 
-The play-status lamp accepts a double click within 0.8 seconds to move to the next configured play status, cycling at the end. The game-status lamp accepts the same double click only while its executable path is invalid; it cycles **In other machine**, **Data missing**, and **Storaged**. A valid path forms a wall: the forced green installed state never cycles to an invalid state. Status icon meanings come from the stored vectors; defaults include hollow/half/filled squares for play states and filled circle/hollow circle/cross/hollow cloud for game states.
+The play-status lamp accepts a double click within 0.8 seconds to move to the next configured play status, cycling at the end. On a valid executable path, the game-status lamp alternates **Installed locally** and **Backuped**; on an invalid path it cycles **In other machine**, **Data missing**, and **Storaged**. The valid and invalid groups never cross through double-clicking. Status icon meanings come from the stored vectors; defaults include hollow/half/filled squares for play states and filled circle/hollow circle/cross/hollow cloud/filled cloud for game states.
 
 ## 9. Editing modes
 
@@ -163,7 +162,7 @@ The play-status lamp accepts a double click within 0.8 seconds to move to the ne
 
 First-level edit changes one game. It provides boxed interactive text controls for title, note, paths and selectable properties. Image and save/game path selection controls are placed below the normal properties in the scrollable page. Choosing a cover opens a crop/zoom surface before the managed image is saved.
 
-The selected save root, region-command alias and tag values are shown as mapped text; persisted IDs remain internal. Every multi-select dimension has its own clearly labelled `(<name> multi-select)` first-level selection row, using orange mutually-aware checkbox tiles: at least one value is required, and `none` cannot coexist with another value. Play status is not set here because it is changed from the detail lamp. Game status is also absent: it is path-derived and can only be cycled from the detail lamp while unavailable.
+The selected save root, region-command alias and tag values are shown as mapped text; persisted IDs remain internal. Every multi-select dimension has its own clearly labelled `(<name> multi-select)` first-level selection row, using orange mutually-aware checkbox tiles: at least one value is required, and `none` cannot coexist with another value. Play status is not set here because it is changed from the detail lamp. Game status is also absent: it is path-derived and can only be cycled from the detail lamp within its current valid or invalid path group.
 
 ### 9.2 Second-level global management
 
@@ -182,11 +181,9 @@ Property collections are tiles rather than a fixed list: simple properties use o
 
 The vector icon editor previews existing custom artwork or the logical built-in glyph when no custom vector is saved. It supports freehand line, straight line, hollow circle, hollow triangle, hollow rectangle, and Paint-style flood fill of an enclosed region. New geometry can be adjusted immediately after creation. Vectors render as white marks over the selected coloured background.
 
-## 10. Launching and process diagnostics
+## 10. Launching
 
-Launch resolves the stored relative game path against `RcRootPath`. A direct launch uses the game directory as working directory. A configured region command is invoked with the game executable as its final argument.
-
-`GameProcessTracker` records a launched process ID and start time, then may observe/adopt an exact child executable for region-launcher workflows. WMI event monitoring and two bounded post-launch checks are diagnostics only. The persisted identity lets a restarted launcher inspect an already-running tracked process safely. Process tracking does not alter the current UI into a Stop action and must never cause a page-rebuild loop.
+Launch resolves the stored relative game path against `RcRootPath`. A direct launch uses the game directory as working directory. A configured region command is invoked with the game executable as its final argument. After Windows accepts the launch request, GameShelf disposes only its temporary `Process` handle; it does not enumerate, monitor, persist, recover, signal, or otherwise track the game process.
 
 ## 11. Logging and reliability
 
@@ -202,11 +199,12 @@ Unhandled UI, runtime and task exceptions are logged. Database writes use a temp
 
 **Before every `git commit`, `git push`, PR update, merge, or release publication, review and update this `spec.md` so it matches the implementation.** Update `MAINTENANCE.md` with the patch-specific history and troubleshooting note as well.
 
-The normal workflow is:
+The branch and release workflow is:
 
-1. Work on a development branch.
-2. Update implementation, tests/checks, `spec.md`, and `MAINTENANCE.md` together.
-3. Commit and push the branch, then open/update a pull request to `main`.
-4. Build the requested package only after checking and terminating a prior `Launcher` process if necessary.
-5. Produce `Launcher.exe` first, then copy it to `Launcher_<version>.exe`.
-6. Merge only after the requested review/approval. Publish only when expressly requested; never include `savedata/` in source control or release assets.
+1. `develop` is the single long-lived integration branch. Create each alpha or beta work line as `feature/<version>` from `develop`. Git cannot host both a `develop` branch and `develop/<version>` branches, so the `feature/` prefix is intentional.
+2. Before every commit, push, PR update, merge, or release publication, reread this specification and correct any statement that no longer matches the implementation. Update `MAINTENANCE.md` with the patch-specific history and troubleshooting note at the same time.
+3. Commit and push `feature/<version>`, then open or update its pull request to `develop`.
+4. At the end of each alpha or beta version cycle, merge `feature/<version>` into `develop` and delete that feature branch. A beta prerelease, when requested, is built and published from `develop`.
+5. A stable release contains no new implementation work: it is the exact final tested beta commit. When the user designates that beta as stable, merge `develop` into `main` and publish the stable package from that unchanged commit.
+6. Build a requested package only after checking and terminating a prior `Launcher` process if necessary. Produce `Launcher.exe` first, then copy it to `Launcher_<version>.exe`.
+7. Never include `savedata/` in source control or release assets. Publish only when expressly requested.

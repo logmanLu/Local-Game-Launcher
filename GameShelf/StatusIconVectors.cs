@@ -23,6 +23,7 @@ public static class StatusIconVectors
     public static string OutlineCircle { get; } = Define(("ellipse", 24, 24, 52, 52));
     public static string Cross { get; } = Define(("line", 27, 27, 46, 46), ("line", 73, 27, -46, 46));
     public static string OutlineCloud { get; } = Define(("cloud", 17, 28, 66, 46));
+    public static string FilledCloud { get; } = Define(("cloud-fill", 17, 28, 66, 46));
     public static string OutlineSquare { get; } = Define(("rectangle", 24, 24, 52, 52));
     public static string HalfSquare { get; } = Define(("rectangle-fill", 24, 50, 52, 26), ("rectangle", 24, 24, 52, 52));
     public static string FilledSquare { get; } = Define(("rectangle-fill", 24, 24, 52, 52));
@@ -77,6 +78,7 @@ public static class StatusIconVectors
             case "rectangle-fill": graphics.FillRectangle(brush, rect); break;
             case "triangle": graphics.DrawPolygon(pen, [new PointF(rect.Left + rect.Width / 2, rect.Top), new PointF(rect.Right, rect.Bottom), new PointF(rect.Left, rect.Bottom)]); break;
             case "cloud": DrawCloud(graphics, pen, rect); break;
+            case "cloud-fill": FillCloud(graphics, brush, rect); break;
         }
     }
     private static void DrawCloud(Graphics graphics, Pen pen, RectangleF rect)
@@ -88,6 +90,17 @@ public static class StatusIconVectors
         path.AddLine(rect.Right - rect.Width * .12f, rect.Bottom, rect.X + rect.Width * .18f, rect.Bottom);
         graphics.DrawPath(pen, path);
     }
+    private static void FillCloud(Graphics graphics, Brush brush, RectangleF rect)
+    {
+        using var path = new GraphicsPath();
+        path.AddArc(rect.X, rect.Y + rect.Height * .28f, rect.Width * .45f, rect.Height * .55f, 145, 145);
+        path.AddArc(rect.X + rect.Width * .22f, rect.Y, rect.Width * .48f, rect.Height * .72f, 180, 180);
+        path.AddArc(rect.X + rect.Width * .54f, rect.Y + rect.Height * .22f, rect.Width * .44f, rect.Height * .62f, 215, 145);
+        path.AddLine(rect.Right - rect.Width * .12f, rect.Bottom, rect.X + rect.Width * .18f, rect.Bottom);
+        path.CloseFigure();
+        graphics.FillPath(brush, path);
+    }
+
     private static void FloodFill(Bitmap bitmap, float x, float y)
     {
         var startX = Math.Clamp((int)Math.Round(x), 0, bitmap.Width - 1); var startY = Math.Clamp((int)Math.Round(y), 0, bitmap.Height - 1);

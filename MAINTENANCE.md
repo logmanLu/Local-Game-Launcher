@@ -1,6 +1,37 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0b4` (beta)
+**Current application patch:** `2.1.0` (stable)
+
+### 2.1.0 (stable)
+
+- Promoted the tested `2.1.0b7` implementation unchanged to the 2.1.0 stable line. The stable package uses Release compilation and the stable informational version, so its default log threshold is `Information`; all functional changes remain those tested in the final beta.
+
+### 2.1.0b7 (beta)
+
+- Increased Library virtual-grid overscan from two to six rows on each side and added a bounded 72-cover decoded-image cache. Cover decoding now runs in the background; cards receive completed cloned bitmaps on the UI thread.
+- Library path-state scanning, tag/title filtering and game-ID sorting now run against immutable snapshots on a worker thread. The UI immediately restores an existing cached grid or displays a lightweight loading state, then applies only the completed result.
+- Corrected an upward-scroll blank-region regression: direct scrollbar assignments now explicitly update the virtual viewport, while the row-range guard still avoids any work until newly visible rows actually change.
+- Detail-page double-click status changes now repaint only the affected status lamp. They no longer recreate the detail page or disturb its scroll location.
+- Library navigation preserves the detached virtual card frame through detail, first-level edit, and second-level edit pages. Return-to-Library reattaches that frame at its prior scroll position before path/status reconciliation runs.
+- Reconciliation now compares the current data after the cached frame is visible, and patches changed realized card regions individually (cover, number/title, status lamps, single-select tags, or multi-select tags). A presentation/filter/order change still correctly rebuilds the virtual grid.
+- Removed duplicate wheel-triggered viewport work. The virtual grid now ignores wheel movement that stays in its existing realized row range, avoiding needless WinForms control layout and GDI churn during normal scrolling.
+
+### 2.1.0b6 (beta)
+
+- Removed the obsolete `GameProcessTracker` subsystem completely. GameShelf now only submits the selected executable or region command to Windows, then releases its temporary process handle; it does not persist or diagnose game PIDs, subscribe to WMI, recover child processes, or provide any process-control behaviour.
+- Removed the `System.Management` package and the persisted `Settings.RunningGameProcesses` model. Normalization deletes the legacy JSON value so old savedata upgrades cleanly without keeping stale process identities.
+- Corrected `spec.md` to describe the current path/status, virtual Library, Backuped-state and no-process-tracking implementation.
+- Established the repository workflow: `develop` is the integration branch and each test version uses `feature/<version>`. A completed feature merges to `develop` and is deleted; a stable build is an unchanged final beta merged from `develop` to `main`.
+
+### 2.1.0b5 (beta)
+
+- Added the protected blue system game status **Backuped**: the game is locally available and has a backup. It uses the Storaged blue background with a filled white cloud; Storaged continues to use an outline cloud.
+- Replaced the former one-way executable status refresh with the complete path-state matrix: invalid paths map Installed locally → In other machine and Backuped → Storaged; valid paths map In other machine/Data missing → Installed locally and Storaged → Backuped. Every other state remains unchanged.
+- A double-click on a valid detail game-status lamp now alternates **Installed locally** and **Backuped**. On an invalid path it continues to cycle **In other machine**, **Data missing** and **Storaged**. The page keeps its current scroll position.
+- Implemented a virtualized fixed Library grid. It realizes only the viewport plus two buffer rows above and below; offscreen card controls and their cover bitmaps are disposed. This bounds native-control/GDI use for very large Libraries while keeping scroll-time layout work local to entering/leaving rows.
+- Returning from game detail now retains the in-memory virtual Library grid and its vertical position. The launcher compares card presentation fingerprints and rebuilds only changed realized cards; a changed filter/order/schema/window size instead causes the required full virtual-grid refresh. This cache is deliberately session-only and is not written to savedata.
+- Corrected the first cache implementation's return-path overlay: cached cards are now reattached only after the current detail controls are removed, so Library and game-detail content cannot coexist in the same scroll container.
+
 ### 2.1.0b4 (beta)
 
 - Diagnosed the repeated freeze from the application log: Windows Forms reported Win32 error **1158** (failure while creating a window handle) from `BuildTopCore`. The cause was repeated header/card rebuilds which removed controls without disposing their native handles, compounded by retained top-bar resize handlers.
