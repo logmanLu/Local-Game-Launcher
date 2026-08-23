@@ -25,8 +25,21 @@ public sealed class MainForm : Form
     private Localizer _t;
     private readonly BufferedFlowLayoutPanel _content = new() { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(42) };
     private sealed record LibraryCardSnapshot(string PresentationKey, List<int> GameIds, List<string> GameFingerprints);
+    private sealed record LibraryDimensionProjection(int DimensionId, bool IsMultiSelect);
+    private sealed record LibraryGameProjection(int Id, string Title, int PlayStatusId, int GameStatusId, List<int> Tags, List<List<int>> MultiTags, string ResolvedGamePath);
+    private sealed record LibraryQuerySnapshot(string TitleSearch, int? PlayStatusFilter, int? GameStatusFilter, Dictionary<int, List<int>> TagFilters,
+        List<LibraryDimensionProjection> Dimensions, List<LibraryGameProjection> Games, int InstalledId, int OtherMachineId, int MissingId, int StoragedId, int BackupedId);
+    private sealed record LibraryPreparationResult(List<int> OrderedGameIds, Dictionary<int, int> GameStatuses);
     private LibraryCardSnapshot? _libraryCardSnapshot;
     private int _cachedLibraryScrollY;
+    private int _libraryPreparationGeneration;
+    private CancellationTokenSource? _libraryPreparationCancellation;
+    private readonly object _coverCacheGate = new();
+    private readonly Dictionary<string, Bitmap> _libraryCoverCache = new(StringComparer.Ordinal);
+    private readonly LinkedList<string> _libraryCoverLru = [];
+    private readonly Dictionary<string, LinkedListNode<string>> _libraryCoverLruNodes = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _libraryCoverLoading = new(StringComparer.Ordinal);
+    private const int LibraryCoverCacheLimit = 72;
     private readonly Panel _top = new() { Dock = DockStyle.Top, Height = 108 };
     private VirtualGameCardPanel? _libraryCards;
     private readonly List<EventHandler> _topResizeHandlers = [];
@@ -38,6 +51,12 @@ public sealed class MainForm : Form
     private FormBorderStyle _restoreBorderStyle = FormBorderStyle.Sizable;
     private readonly Dictionary<int, DateTime> _playStatusClicks = [];
     private readonly Dictionary<int, DateTime> _gameStatusClicks = [];
+    // Detail status controls are intentionally retained separately: changing a
+    // status must repaint only its lamp, never reconstruct the detail page.
+    private Panel? _detailPlayStatusBlock;
+    private Panel? _detailGameStatusBlock;
+    private sealed record StatusBlockState(StatusKind Kind, int Id);
+    private readonly ToolTip _statusToolTip = new();
     private readonly Panel _resizeMask = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(27, 29, 30), Visible = false };
     private bool _interactiveResize;
     private bool _resizeRefreshQueued;
@@ -70,7 +89,7 @@ public sealed class MainForm : Form
         _selectedId = store.Data.Settings.SelectedGameId;
         _management = false;
         if (_selectedId is not null && store.Data.Games.Any(game => game.Id == _selectedId) && store.Data.Settings.Page is "detail" or "edit") ShowDetail(); else { _selectedId = null; ShowLibrary(); }
-        KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => { _nativeMenuHoverTimer.Stop(); _nativeMenuHoverTimer.Dispose(); DetachNativeMenu(); };
+        KeyDown += HandleKeys; FormClosing += (_, _) => PersistWindow(); FormClosed += (_, _) => { _libraryPreparationCancellation?.Cancel(); DisposeLibraryCoverCache(); _statusToolTip.Dispose(); _nativeMenuHoverTimer.Stop(); _nativeMenuHoverTimer.Dispose(); DetachNativeMenu(); };
         _nativeMenuHoverTimer.Tick += (_, _) => UpdateNativeMenuVisibility();
         // Resolve a launcher policy before the first paint. Doing this from
         // Shown made the fixed Launcher.exe briefly appear before it handed
@@ -816,14 +835,19 @@ public sealed class MainForm : Form
         _top.Controls.Clear();
     }
     private void RegisterTopResize(EventHandler handler) { _top.Resize += handler; _topResizeHandlers.Add(handler); }
-    private void Clear(bool preserveLibrary = false)
+    private void Clear(bool preserveLibrary = false, bool discardLibrary = false)
     {
-        if (preserveLibrary && _libraryCards is { IsDisposed: false } && _libraryCards.Parent == _content)
+        // Keep the virtual Library grid detached in-memory while the user
+        // visits detail/edit/global pages.  It is session-only and is thrown
+        // away explicitly when the Library presentation itself changes.
+        if (_libraryCards is { IsDisposed: false } && _libraryCards.Parent == _content)
         {
             _cachedLibraryScrollY = _content.VerticalScroll.Value;
             _content.Controls.Remove(_libraryCards);
         }
-        else DiscardLibraryCardCache();
+        if (discardLibrary) DiscardLibraryCardCache();
+        _detailPlayStatusBlock = null;
+        _detailGameStatusBlock = null;
         foreach (Control control in _content.Controls.Cast<Control>().ToArray()) control.Dispose();
         _content.Controls.Clear();
     }
@@ -913,8 +937,16 @@ public sealed class MainForm : Form
         if (notches == 0) notches = Math.Sign(delta);
         var step = Math.Max(S(24), Math.Max(1, SystemInformation.MouseWheelScrollLines) * S(16));
         var next = Math.Clamp(bar.Value - notches * step, bar.Minimum, Math.Max(bar.Minimum, bar.Maximum - bar.LargeChange + 1));
-        if (next != bar.Value) bar.Value = next;
-        RefreshLibraryCardViewport();
+        if (next != bar.Value)
+        {
+            bar.Value = next;
+            // Setting VerticalScroll.Value programmatically does not reliably
+            // raise Scroll on every WinForms host.  Tell the virtual grid now;
+            // UpdateViewport itself is a no-op until a row-window boundary is
+            // crossed, so this keeps scrolling cheap while preventing blank
+            // areas after a direction change.
+            RefreshLibraryCardViewport();
+        }
     }
     private void RefreshLibraryCardViewport()
     {
@@ -936,10 +968,12 @@ public sealed class MainForm : Form
     }
     private void ShowLibrary(bool rebuildCards = true)
     {
-        var statusChanged = _store.RefreshAllGamePathStatuses();
-        if (statusChanged) _store.Save();
         _page = "library"; BuildTop(!_management);
-        if (!RestoreCachedLibraryCards()) PopulateLibraryCards();
+        // Reattach the previous frame first.  The post-paint reconciliation
+        // below computes paths, filtering and ordering away from the UI thread.
+        var restored = RestoreCachedLibraryCards();
+        if (!restored) ShowLibraryLoading();
+        ScheduleLibraryPreparation(restored);
     }
     private bool RestoreCachedLibraryCards()
     {
@@ -948,22 +982,120 @@ public sealed class MainForm : Form
         var presentationKey = LibraryPresentationKey();
         if (!string.Equals(_libraryCardSnapshot.PresentationKey, presentationKey, StringComparison.Ordinal) ||
             !_libraryCardSnapshot.GameIds.SequenceEqual(games.Select(game => game.Id))) return false;
-        var fingerprints = games.Select(GameCardFingerprint).ToList();
-        var changed = fingerprints.Select((fingerprint, index) => (fingerprint, index))
-            .Where(item => !string.Equals(item.fingerprint, _libraryCardSnapshot.GameFingerprints[item.index], StringComparison.Ordinal))
-            .Select(item => item.index).ToList();
-        _libraryCards.UpdateItems(games, changed);
-        _libraryCardSnapshot = new LibraryCardSnapshot(presentationKey, games.Select(game => game.Id).ToList(), fingerprints);
         ClearContentExceptLibraryCards();
         if (_libraryCards.Parent is null) _content.Controls.Add(_libraryCards);
         else if (_libraryCards.Parent != _content) return false;
         ApplyLibraryManagementMode();
+        RefreshAvailableLibraryCovers();
         var restoreScroll = _cachedLibraryScrollY;
         ScheduleLibraryCardViewportRefresh();
         if (restoreScroll > 0 && IsHandleCreated)
             BeginInvoke((Action)(() => { if (!IsDisposed && _page == "library") { _content.AutoScrollPosition = new Point(0, restoreScroll); RefreshLibraryCardViewport(); } }));
-        AppLog.Debug("Library", changed.Count == 0 ? "Restored cached Library card grid without rebuilding cards." : $"Restored cached Library grid and refreshed {changed.Count} changed card slots.");
+        AppLog.Debug("Library", "Restored cached Library card grid before reconciliation.");
         return true;
+    }
+    private void ShowLibraryLoading()
+    {
+        Clear(discardLibrary: true);
+        _content.Controls.Add(new Label
+        {
+            Text = "Loading library…", AutoSize = true, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245), Margin = new Padding(S(18))
+        });
+    }
+    private void ScheduleLibraryPreparation(bool cacheWasRestored)
+    {
+        _libraryPreparationCancellation?.Cancel();
+        _libraryPreparationCancellation?.Dispose();
+        var cancellation = _libraryPreparationCancellation = new CancellationTokenSource();
+        var generation = ++_libraryPreparationGeneration;
+        var snapshot = CaptureLibraryQuery();
+        _ = Task.Run(() => PrepareLibrary(snapshot, cancellation.Token), cancellation.Token).ContinueWith(task =>
+        {
+            if (task.IsCanceled || cancellation.IsCancellationRequested || IsDisposed) return;
+            if (task.IsFaulted) { AppLog.Error("Library", "Background Library preparation failed.", task.Exception); return; }
+            if (!IsHandleCreated) return;
+            BeginInvoke((Action)(() =>
+            {
+                if (IsDisposed || cancellation.IsCancellationRequested || generation != _libraryPreparationGeneration || _page != "library") return;
+                ApplyPreparedLibrary(task.Result, cacheWasRestored);
+            }));
+        }, TaskScheduler.Default);
+    }
+    private LibraryQuerySnapshot CaptureLibraryQuery()
+    {
+        var roles = _store.Data.GameStatuses.ToDictionary(status => status.SystemRole, status => status.Id, StringComparer.Ordinal);
+        return new LibraryQuerySnapshot(
+            _store.Data.Settings.TitleSearch.Replace("\\n", "\n").Trim(), _store.Data.Settings.SelectedPlayStatusFilter, _store.Data.Settings.SelectedGameStatusFilter,
+            _store.Data.Settings.SelectedTagFilters.ToDictionary(pair => pair.Key, pair => pair.Value.ToList()),
+            _store.Data.TagSchema.Select(dimension => new LibraryDimensionProjection(dimension.DimensionId, dimension.IsMultiSelect)).ToList(),
+            _store.Data.Games.Select(game => new LibraryGameProjection(game.Id, DisplayTitle(game.Title), game.PlayStatusId, game.GameStatusId, game.Tags.ToList(), game.MultiTags.Select(values => values.ToList()).ToList(), _store.ResolveGamePath(game.GamePath))).ToList(),
+            roles.GetValueOrDefault(Defaults.InstalledRole), roles.GetValueOrDefault(Defaults.OtherMachineRole), roles.GetValueOrDefault(Defaults.MissingRole), roles.GetValueOrDefault(Defaults.StoragedRole), roles.GetValueOrDefault(Defaults.BackupedRole));
+    }
+    private static LibraryPreparationResult PrepareLibrary(LibraryQuerySnapshot snapshot, CancellationToken cancellation)
+    {
+        var statuses = new Dictionary<int, int>();
+        var matched = new List<(int Id, string Title)>();
+        foreach (var game in snapshot.Games)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            var valid = PathRules.IsValidGameExe(game.ResolvedGamePath);
+            var status = game.GameStatusId;
+            if (valid)
+            {
+                if (status == snapshot.OtherMachineId || status == snapshot.MissingId) status = snapshot.InstalledId;
+                else if (status == snapshot.StoragedId) status = snapshot.BackupedId;
+            }
+            else
+            {
+                if (status == snapshot.InstalledId) status = snapshot.OtherMachineId;
+                else if (status == snapshot.BackupedId) status = snapshot.StoragedId;
+            }
+            statuses[game.Id] = status;
+            var match = (string.IsNullOrWhiteSpace(snapshot.TitleSearch) || game.Title.Contains(snapshot.TitleSearch, StringComparison.CurrentCultureIgnoreCase)) &&
+                (!snapshot.PlayStatusFilter.HasValue || game.PlayStatusId == snapshot.PlayStatusFilter.Value) &&
+                (!snapshot.GameStatusFilter.HasValue || status == snapshot.GameStatusFilter.Value);
+            if (match)
+            {
+                for (var index = 0; index < snapshot.Dimensions.Count && match; index++)
+                {
+                    var dimension = snapshot.Dimensions[index];
+                    if (!snapshot.TagFilters.TryGetValue(dimension.DimensionId, out var values) || values.Count == 0) continue;
+                    match = dimension.IsMultiSelect
+                        ? values.Intersect(game.MultiTags.ElementAtOrDefault(index) ?? []).Any()
+                        : values.Contains(game.Tags.ElementAtOrDefault(index));
+                }
+            }
+            if (match) matched.Add((game.Id, game.Title));
+        }
+        return new LibraryPreparationResult(matched.OrderBy(item => item.Id).Select(item => item.Id).ToList(), statuses);
+    }
+    private void ApplyPreparedLibrary(LibraryPreparationResult prepared, bool cacheWasRestored)
+    {
+        var byId = _store.Data.Games.ToDictionary(game => game.Id);
+        var statusChanged = false;
+        foreach (var pair in prepared.GameStatuses)
+        {
+            if (!byId.TryGetValue(pair.Key, out var game) || game.GameStatusId == pair.Value) continue;
+            game.GameStatusId = pair.Value; statusChanged = true;
+        }
+        if (statusChanged) _store.Save();
+        var games = prepared.OrderedGameIds.Where(byId.ContainsKey).Select(id => byId[id]).ToList();
+        var presentationKey = LibraryPresentationKey();
+        if (!cacheWasRestored || _libraryCards is null || _libraryCards.IsDisposed || _libraryCardSnapshot is null ||
+            !string.Equals(_libraryCardSnapshot.PresentationKey, presentationKey, StringComparison.Ordinal) ||
+            !_libraryCardSnapshot.GameIds.SequenceEqual(games.Select(game => game.Id)))
+        {
+            PopulateLibraryCards(games);
+            AppLog.Debug("Library", "Prepared Library data required a virtual-grid rebuild.");
+            return;
+        }
+        var fingerprints = games.Select(GameCardFingerprint).ToList();
+        var changed = fingerprints.Select((fingerprint, index) => (fingerprint, index))
+            .Where(item => !string.Equals(item.fingerprint, _libraryCardSnapshot.GameFingerprints[item.index], StringComparison.Ordinal))
+            .Select(item => item.index).ToList();
+        _libraryCards.UpdateItems(games, changed, RefreshLibraryCard);
+        _libraryCardSnapshot = new LibraryCardSnapshot(presentationKey, games.Select(game => game.Id).ToList(), fingerprints);
+        AppLog.Debug("Library", changed.Count == 0 ? "Background Library preparation found no card changes." : $"Background Library preparation patched {changed.Count} card slot(s).");
     }
     private void ClearContentExceptLibraryCards()
     {
@@ -974,11 +1106,11 @@ public sealed class MainForm : Form
         }
     }
 
-    private void PopulateLibraryCards()
+    private void PopulateLibraryCards(IReadOnlyList<GameEntry>? preparedGames = null)
     {
         if (_page != "library") return;
-        Clear();
-        var games = FilteredGames().OrderBy(game => game.Id).ToList();
+        Clear(discardLibrary: true);
+        var games = preparedGames?.ToList() ?? FilteredGames().OrderBy(game => game.Id).ToList();
         var grid = new VirtualGameCardPanel(games, GameCard, ConfigureLibraryCard)
         {
             Width = Math.Max(S(320), _content.ClientSize.Width - _content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - S(8)),
@@ -1089,34 +1221,33 @@ public sealed class MainForm : Form
         var singleTop = titleTop + titleHeight + S(3); var multiTop = singleTop + singleHeight + S(4);
         var card = new Panel { Width = cardWidth, Height = cardSize.Height, Margin = Padding.Empty, BorderStyle = BorderStyle.FixedSingle, AccessibleName = game.Title, BackColor = baseColor, Tag = game };
         var imageHeight = S(263); var imageWidth = imageHeight * 3 / 4; var rightLeft = S(9) + imageWidth + S(10); var rightWidth = cardWidth - rightLeft - S(9);
-        var image = new PictureBox { Left = S(9), Top = S(9), Width = imageWidth, Height = imageHeight, SizeMode = PictureBoxSizeMode.Zoom, Image = LoadImage(game), Cursor = _management ? Cursors.Default : Cursors.Hand };
+        var image = new PictureBox { Name = "library-cover", Left = S(9), Top = S(9), Width = imageWidth, Height = imageHeight, SizeMode = PictureBoxSizeMode.Zoom, Cursor = _management ? Cursors.Default : Cursors.Hand };
+        SetLibraryCardCover(image, game);
         var statusGap = S(7); var statusHeight = (imageHeight - statusGap) / 2;
-        var playStatus = StatusBlock(StatusKind.Play, game.PlayStatusId, new Rectangle(rightLeft, S(9), rightWidth, statusHeight));
-        var gameStatus = StatusBlock(StatusKind.Game, game.GameStatusId, new Rectangle(rightLeft, S(9) + statusHeight + statusGap, rightWidth, statusHeight));
-        var id = new Label { Text = game.Id.ToString(), Left = S(12), Top = idTop, Width = cardWidth - S(24), Height = idHeight, Font = new Font(Font.FontFamily, S(22), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
-        var title = new Label { Text = DisplayTitle(game.Title), Left = S(12), Top = titleTop, Width = cardWidth - S(24), Height = titleHeight, AutoEllipsis = true, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = Color.White };
-        var singleTags = new FlowLayoutPanel { Left = S(9), Top = singleTop, Width = cardWidth - S(18), Height = singleHeight, AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
-        foreach (var dimension in HomeDisplayDimensions())
-        {
-            var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == dimension.DimensionId);
-            var text = index >= 0 ? dimension.Values.GetValueOrDefault(game.Tags.ElementAtOrDefault(index)) ?? string.Empty : string.Empty;
-            if (!string.IsNullOrWhiteSpace(text)) singleTags.Controls.Add(FilterChip(text, SingleTagColor));
-        }
-        var multiTags = new Panel { Left = S(9), Top = multiTop, Width = cardWidth - S(18), Height = multiHeight, BackColor = baseColor };
-        var multiRowTop = 0;
-        foreach (var multiDimension in HomeMultiDisplayDimensions())
-        {
-            var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == multiDimension.DimensionId);
-            var row = new FlowLayoutPanel { Left = 0, Top = multiRowTop, Width = multiTags.Width, Height = multiRowHeight, AutoScroll = true, WrapContents = false, BackColor = baseColor, Padding = Padding.Empty };
-            foreach (var value in OrderedSelectedValues(multiDimension, game.MultiTags.ElementAtOrDefault(index) ?? []))
-            {
-                var text = multiDimension.Values.GetValueOrDefault(value) ?? "";
-                if (!string.IsNullOrWhiteSpace(text)) row.Controls.Add(FilterChip(text, MultiTagColor));
-            }
-            multiTags.Controls.Add(row); multiRowTop += multiRowHeight + S(6);
-        }
+        var playStatus = StatusBlock(StatusKind.Play, game.PlayStatusId, new Rectangle(rightLeft, S(9), rightWidth, statusHeight)); playStatus.Name = "library-play-status";
+        var gameStatus = StatusBlock(StatusKind.Game, game.GameStatusId, new Rectangle(rightLeft, S(9) + statusHeight + statusGap, rightWidth, statusHeight)); gameStatus.Name = "library-game-status";
+        var id = new Label { Name = "library-id", Text = game.Id.ToString(), Left = S(12), Top = idTop, Width = cardWidth - S(24), Height = idHeight, Font = new Font(Font.FontFamily, S(22), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) };
+        var title = new Label { Name = "library-title", Text = DisplayTitle(game.Title), Left = S(12), Top = titleTop, Width = cardWidth - S(24), Height = titleHeight, AutoEllipsis = true, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = Color.White };
+        var singleTags = new FlowLayoutPanel { Name = "library-single-tags", Tag = LibrarySingleTagsKey(game), Left = S(9), Top = singleTop, Width = cardWidth - S(18), Height = singleHeight, AutoScroll = true, WrapContents = true, BackColor = baseColor, Padding = Padding.Empty };
+        PopulateLibrarySingleTags(singleTags, game);
+        var multiTags = new Panel { Name = "library-multi-tags", Tag = LibraryMultiTagsKey(game), Left = S(9), Top = multiTop, Width = cardWidth - S(18), Height = multiHeight, BackColor = baseColor };
+        PopulateLibraryMultiTags(multiTags, game);
         card.Controls.AddRange([image, playStatus, gameStatus, id, title, singleTags, multiTags]);
-        void Interact(object? _, MouseEventArgs e)
+        void Highlight(bool enabled)
+        {
+            if (_management) return;
+            card.BackColor = enabled ? Color.FromArgb(57, 68, 62) : baseColor;
+            singleTags.BackColor = card.BackColor; multiTags.BackColor = card.BackColor;
+        }
+        WireLibraryCardInteractions(card, card, game);
+        card.MouseEnter += (_, _) => Highlight(true); card.MouseLeave += (_, _) => Highlight(false);
+        image.MouseEnter += (_, _) => Highlight(true); image.MouseLeave += (_, _) => Highlight(false);
+        card.Disposed += (_, _) => { var owned = image.Image; image.Image = null; owned?.Dispose(); };
+        return card;
+    }
+    private void WireLibraryCardInteractions(Control root, Panel card, GameEntry game)
+    {
+        root.MouseUp += (_, e) =>
         {
             if (_management)
             {
@@ -1124,19 +1255,173 @@ public sealed class MainForm : Form
                 return;
             }
             if (e.Button == MouseButtons.Left) { _selectedId = game.Id; ShowDetail(); }
-        }
-        void Highlight(bool enabled)
+        };
+        foreach (Control child in root.Controls) WireLibraryCardInteractions(child, card, game);
+    }
+    private string GameCardImageStamp(GameEntry game)
+    {
+        return game.ImageFile ?? string.Empty;
+    }
+    private bool TryCloneCachedCover(string stamp, out Image image)
+    {
+        lock (_coverCacheGate)
         {
-            if (_management) return;
-            card.BackColor = enabled ? Color.FromArgb(57, 68, 62) : baseColor;
-            singleTags.BackColor = card.BackColor; multiTags.BackColor = card.BackColor;
+            if (_libraryCoverCache.TryGetValue(stamp, out var cached))
+            {
+                TouchLibraryCover(stamp);
+                image = new Bitmap(cached);
+                return true;
+            }
         }
-        card.MouseUp += Interact;
-        foreach (var control in Descendants(card)) control.MouseUp += Interact;
-        card.MouseEnter += (_, _) => Highlight(true); card.MouseLeave += (_, _) => Highlight(false);
-        image.MouseEnter += (_, _) => Highlight(true); image.MouseLeave += (_, _) => Highlight(false);
-        card.Disposed += (_, _) => { var owned = image.Image; image.Image = null; owned?.Dispose(); };
-        return card;
+        image = null!;
+        return false;
+    }
+    private void SetLibraryCardCover(PictureBox cover, GameEntry game)
+    {
+        var stamp = GameCardImageStamp(game);
+        var old = cover.Image;
+        if (!string.IsNullOrWhiteSpace(stamp) && TryCloneCachedCover(stamp, out var cached))
+        {
+            cover.Image = cached; cover.Tag = stamp;
+        }
+        else
+        {
+            cover.Image = ImageService.MissingImage(); cover.Tag = "pending:" + stamp;
+            QueueLibraryCoverLoad(game.Id, stamp, _store.ImagePath(game));
+        }
+        old?.Dispose();
+    }
+    private void QueueLibraryCoverLoad(int gameId, string stamp, string path)
+    {
+        if (string.IsNullOrWhiteSpace(stamp) || string.IsNullOrWhiteSpace(path)) return;
+        lock (_coverCacheGate)
+        {
+            if (_libraryCoverCache.ContainsKey(stamp) || !_libraryCoverLoading.Add(stamp)) return;
+        }
+        _ = Task.Run(() => LoadLibraryCover(path)).ContinueWith(task =>
+        {
+            var bitmap = task.Status == TaskStatus.RanToCompletion ? task.Result : null;
+            if (IsDisposed) { bitmap?.Dispose(); return; }
+            try
+            {
+                lock (_coverCacheGate)
+                {
+                    _libraryCoverLoading.Remove(stamp);
+                    if (bitmap is not null) AddLibraryCover(stamp, bitmap); else bitmap = null;
+                }
+                if (bitmap is null && !HasLibraryCover(stamp)) return;
+                if (_page != "library" || _libraryCards is null || _libraryCards.IsDisposed) return;
+                _libraryCards.RefreshRealized(game => game.Id == gameId, (card, game) =>
+                {
+                    var cover = card.Controls.Find("library-cover", false).OfType<PictureBox>().FirstOrDefault();
+                    if (cover is not null) SetLibraryCardCover(cover, game);
+                });
+            }
+            catch (Exception ex) { AppLog.Warning("Library", $"Could not apply background cover for game {gameId}.", ex); }
+        }, TaskScheduler.FromCurrentSynchronizationContext());
+    }
+    private static Bitmap? LoadLibraryCover(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return null;
+            using var source = Image.FromFile(path);
+            return new Bitmap(source);
+        }
+        catch { return null; }
+    }
+    private bool HasLibraryCover(string stamp)
+    {
+        lock (_coverCacheGate) return _libraryCoverCache.ContainsKey(stamp);
+    }
+    private void AddLibraryCover(string stamp, Bitmap bitmap)
+    {
+        if (_libraryCoverCache.Remove(stamp, out var old)) old.Dispose();
+        _libraryCoverCache[stamp] = bitmap; TouchLibraryCover(stamp);
+        while (_libraryCoverCache.Count > LibraryCoverCacheLimit)
+        {
+            var oldest = _libraryCoverLru.First!; _libraryCoverLru.RemoveFirst(); _libraryCoverLruNodes.Remove(oldest.Value);
+            if (_libraryCoverCache.Remove(oldest.Value, out var evicted)) evicted.Dispose();
+        }
+    }
+    private void TouchLibraryCover(string stamp)
+    {
+        if (_libraryCoverLruNodes.Remove(stamp, out var old)) _libraryCoverLru.Remove(old);
+        _libraryCoverLruNodes[stamp] = _libraryCoverLru.AddLast(stamp);
+    }
+    private void DisposeLibraryCoverCache()
+    {
+        lock (_coverCacheGate)
+        {
+            foreach (var bitmap in _libraryCoverCache.Values) bitmap.Dispose();
+            _libraryCoverCache.Clear(); _libraryCoverLru.Clear(); _libraryCoverLruNodes.Clear(); _libraryCoverLoading.Clear();
+        }
+    }
+    private string LibrarySingleTagsKey(GameEntry game) => string.Join(";", HomeDisplayDimensions().Select(dimension =>
+    {
+        var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == dimension.DimensionId);
+        return $"{dimension.DimensionId}:{game.Tags.ElementAtOrDefault(index)}";
+    }));
+    private string LibraryMultiTagsKey(GameEntry game) => string.Join(";", HomeMultiDisplayDimensions().Select(dimension =>
+    {
+        var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == dimension.DimensionId);
+        return $"{dimension.DimensionId}:{string.Join(',', game.MultiTags.ElementAtOrDefault(index) ?? [])}";
+    }));
+    private static void DisposeControls(Control parent)
+    {
+        foreach (var child in parent.Controls.Cast<Control>().ToArray()) { parent.Controls.Remove(child); child.Dispose(); }
+    }
+    private void PopulateLibrarySingleTags(FlowLayoutPanel target, GameEntry game)
+    {
+        DisposeControls(target);
+        foreach (var dimension in HomeDisplayDimensions())
+        {
+            var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == dimension.DimensionId);
+            var text = index >= 0 ? dimension.Values.GetValueOrDefault(game.Tags.ElementAtOrDefault(index)) ?? string.Empty : string.Empty;
+            if (!string.IsNullOrWhiteSpace(text)) target.Controls.Add(FilterChip(text, SingleTagColor));
+        }
+    }
+    private void PopulateLibraryMultiTags(Panel target, GameEntry game)
+    {
+        DisposeControls(target); var multiRowTop = 0; var multiRowHeight = S(42);
+        foreach (var multiDimension in HomeMultiDisplayDimensions())
+        {
+            var index = _store.Data.TagSchema.FindIndex(item => item.DimensionId == multiDimension.DimensionId);
+            var row = new FlowLayoutPanel { Left = 0, Top = multiRowTop, Width = target.Width, Height = multiRowHeight, AutoScroll = true, WrapContents = false, BackColor = target.BackColor, Padding = Padding.Empty };
+            foreach (var value in OrderedSelectedValues(multiDimension, game.MultiTags.ElementAtOrDefault(index) ?? []))
+            {
+                var text = multiDimension.Values.GetValueOrDefault(value) ?? "";
+                if (!string.IsNullOrWhiteSpace(text)) row.Controls.Add(FilterChip(text, MultiTagColor));
+            }
+            target.Controls.Add(row); multiRowTop += multiRowHeight + S(6);
+        }
+    }
+    private void RefreshLibraryCard(Control control, GameEntry game)
+    {
+        if (control is not Panel card || card.IsDisposed) return;
+        card.Tag = game; card.AccessibleName = game.Title;
+        var cover = card.Controls.Find("library-cover", false).OfType<PictureBox>().FirstOrDefault();
+        var imageStamp = GameCardImageStamp(game);
+        if (cover is not null && (!string.Equals(cover.Tag as string, imageStamp, StringComparison.Ordinal) || !HasLibraryCover(imageStamp))) SetLibraryCardCover(cover, game);
+        var id = card.Controls.Find("library-id", false).OfType<Label>().FirstOrDefault(); if (id is not null) id.Text = game.Id.ToString();
+        var title = card.Controls.Find("library-title", false).OfType<Label>().FirstOrDefault(); if (title is not null) title.Text = DisplayTitle(game.Title);
+        RefreshStatusBlock(card.Controls.Find("library-play-status", false).OfType<Panel>().FirstOrDefault(), StatusKind.Play, game.PlayStatusId);
+        RefreshStatusBlock(card.Controls.Find("library-game-status", false).OfType<Panel>().FirstOrDefault(), StatusKind.Game, game.GameStatusId);
+        var single = card.Controls.Find("library-single-tags", false).OfType<FlowLayoutPanel>().FirstOrDefault();
+        if (single is not null && !string.Equals(single.Tag as string, LibrarySingleTagsKey(game), StringComparison.Ordinal)) { PopulateLibrarySingleTags(single, game); single.Tag = LibrarySingleTagsKey(game); foreach (Control child in single.Controls) WireLibraryCardInteractions(child, card, game); }
+        var multi = card.Controls.Find("library-multi-tags", false).OfType<Panel>().FirstOrDefault();
+        if (multi is not null && !string.Equals(multi.Tag as string, LibraryMultiTagsKey(game), StringComparison.Ordinal)) { PopulateLibraryMultiTags(multi, game); multi.Tag = LibraryMultiTagsKey(game); foreach (Control child in multi.Controls) WireLibraryCardInteractions(child, card, game); }
+        ConfigureLibraryCard(card);
+    }
+    private void RefreshAvailableLibraryCovers()
+    {
+        if (_libraryCards is null || _libraryCards.IsDisposed) return;
+        _libraryCards.RefreshRealized(_ => true, (card, game) =>
+        {
+            var cover = card.Controls.Find("library-cover", false).OfType<PictureBox>().FirstOrDefault();
+            var stamp = GameCardImageStamp(game);
+            if (cover is not null && (cover.Tag as string)?.StartsWith("pending:", StringComparison.Ordinal) == true && HasLibraryCover(stamp)) SetLibraryCardCover(cover, game);
+        });
     }
     private IEnumerable<TagDimension> HomeDisplayDimensions() => _store.Data.Settings.HomeDisplayDimensionIds
         .Select(id => _store.Data.TagSchema.FirstOrDefault(dimension => dimension.DimensionId == id))
@@ -1186,11 +1471,29 @@ public sealed class MainForm : Form
     private Panel StatusBlock(StatusKind kind, int id, Rectangle bounds, MouseEventHandler? mouseUp = null)
     {
         var text = StatusName(kind, id);
-        var block = new Panel { Bounds = bounds, BackColor = StatusColor(kind, id), AccessibleName = text };
-        block.Paint += (_, e) => { e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; StatusIconVectors.Draw(e.Graphics, block.ClientRectangle, StatusIconVector(kind, id)); };
+        var block = new Panel { Bounds = bounds, BackColor = StatusColor(kind, id), AccessibleName = text, Tag = new StatusBlockState(kind, id) };
+        block.Paint += (_, e) =>
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            if (block.Tag is StatusBlockState state) StatusIconVectors.Draw(e.Graphics, block.ClientRectangle, StatusIconVector(state.Kind, state.Id));
+        };
         if (mouseUp is not null) block.MouseUp += mouseUp;
-        ApplyRoundedCorners(block, S(13)); new ToolTip().SetToolTip(block, text);
+        ApplyRoundedCorners(block, S(13)); _statusToolTip.SetToolTip(block, text);
         return block;
+    }
+    private void RefreshStatusBlock(Panel? block, StatusKind kind, int id)
+    {
+        if (block is null || block.IsDisposed) return;
+        block.Tag = new StatusBlockState(kind, id);
+        block.BackColor = StatusColor(kind, id);
+        block.AccessibleName = StatusName(kind, id);
+        _statusToolTip.SetToolTip(block, block.AccessibleName);
+        block.Invalidate();
+    }
+    private void RefreshDetailStatusBlocks(GameEntry game)
+    {
+        RefreshStatusBlock(_detailPlayStatusBlock, StatusKind.Play, game.PlayStatusId);
+        RefreshStatusBlock(_detailGameStatusBlock, StatusKind.Game, game.GameStatusId);
     }
 
     private void ShowDetail(bool preserveScroll = false)
@@ -1371,6 +1674,8 @@ public sealed class MainForm : Form
         lights.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); lights.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         var playLight = StatusBlock(StatusKind.Play, game.PlayStatusId, Rectangle.Empty, (_, e) => HandlePlayStatusClick(game, e)); playLight.Dock = DockStyle.Fill; playLight.Margin = new Padding(0, 0, S(6), 0);
         var gameLight = StatusBlock(StatusKind.Game, game.GameStatusId, Rectangle.Empty, (_, e) => HandleGameStatusClick(game, e)); gameLight.Dock = DockStyle.Fill; gameLight.Margin = new Padding(S(6), 0, 0, 0);
+        _detailPlayStatusBlock = playLight;
+        _detailGameStatusBlock = gameLight;
         lights.Controls.Add(playLight, 0, 0); lights.Controls.Add(gameLight, 1, 0);
         second.Controls.Add(lights, 1, 0);
 
@@ -1438,7 +1743,7 @@ public sealed class MainForm : Form
         var now = DateTime.UtcNow;
         if (_playStatusClicks.TryGetValue(game.Id, out var previous) && now - previous <= TimeSpan.FromSeconds(.8))
         {
-            _playStatusClicks.Remove(game.Id); _store.SetNextPlayStatus(game.Id); ShowDetail(true); return;
+            _playStatusClicks.Remove(game.Id); _store.SetNextPlayStatus(game.Id); RefreshDetailStatusBlocks(game); return;
         }
         _playStatusClicks[game.Id] = now;
     }
@@ -1448,7 +1753,7 @@ public sealed class MainForm : Form
         var now = DateTime.UtcNow;
         if (_gameStatusClicks.TryGetValue(game.Id, out var previous) && now - previous <= TimeSpan.FromSeconds(.8))
         {
-            _gameStatusClicks.Remove(game.Id); _store.SetNextGameStatus(game.Id); ShowDetail(true); return;
+            _gameStatusClicks.Remove(game.Id); _store.SetNextGameStatus(game.Id); RefreshDetailStatusBlocks(game); return;
         }
         _gameStatusClicks[game.Id] = now;
     }
@@ -2071,7 +2376,11 @@ public sealed class VirtualGameCardPanel : Panel
     private int _rowStride = 1;
     private int _viewportTop = -1;
     private int _viewportHeight = -1;
-    private const int OverscanRows = 2;
+    private int _realizedFirst = -1;
+    private int _realizedLast = -1;
+    // Extra rows trade bounded memory for smoother high-speed scrolling.  At
+    // most the visible rows plus six rows above and below own native controls.
+    private const int OverscanRows = 6;
 
     public VirtualGameCardPanel(IReadOnlyList<GameEntry> games, Func<GameEntry, Control> createCard, Action<Control> configureCard)
     {
@@ -2082,19 +2391,22 @@ public sealed class VirtualGameCardPanel : Panel
     }
 
     /// <summary>Updates the source list without reconstructing unchanged cards.</summary>
-    public void UpdateItems(IReadOnlyList<GameEntry> games, IEnumerable<int> changedIndices)
+    public void UpdateItems(IReadOnlyList<GameEntry> games, IEnumerable<int> changedIndices, Action<Control, GameEntry> refreshCard)
     {
         _games = games;
         foreach (var index in changedIndices.Distinct().Where(_realized.ContainsKey).ToArray())
         {
-            var card = _realized[index]; _realized.Remove(index); Controls.Remove(card); card.Dispose();
+            refreshCard(_realized[index], _games[index]);
         }
-        // Force the viewport pass to recreate changed realized slots, while
-        // offscreen slots naturally use the replacement source on demand.
-        var top = _viewportTop < 0 ? 0 : _viewportTop;
-        var height = _viewportHeight < 0 ? Math.Max(1, ClientSize.Height) : _viewportHeight;
-        _viewportTop = -1; _viewportHeight = -1;
-        UpdateViewport(top, height);
+    }
+
+    public void RefreshRealized(Func<GameEntry, bool> predicate, Action<Control, GameEntry> refreshCard)
+    {
+        foreach (var pair in _realized.ToArray())
+        {
+            var game = _games[pair.Key];
+            if (predicate(game)) refreshCard(pair.Value, game);
+        }
     }
 
     public void ConfigureLayout(Size cardSize, Padding cardMargin)
@@ -2105,6 +2417,7 @@ public sealed class VirtualGameCardPanel : Panel
         _rowStride = Math.Max(1, _cardSize.Height + _cardMargin.Vertical);
         Height = _rows == 0 ? 1 : _cardMargin.Top + _rows * _rowStride + _cardMargin.Bottom;
         _viewportTop = -1; _viewportHeight = -1;
+        _realizedFirst = -1; _realizedLast = -1;
         ClearRealized();
     }
 
@@ -2118,6 +2431,10 @@ public sealed class VirtualGameCardPanel : Panel
         var lastRow = Math.Min(_rows - 1, (top + height) / _rowStride + OverscanRows);
         var first = firstRow * _columns;
         var last = Math.Min(_games.Count - 1, (lastRow + 1) * _columns - 1);
+        // Wheel messages may move a few pixels at a time.  If the virtual
+        // row window has not crossed a boundary, there is no control work to
+        // do: Windows can scroll the already painted surface directly.
+        if (first == _realizedFirst && last == _realizedLast) return;
         SuspendLayout();
         try
         {
@@ -2136,12 +2453,14 @@ public sealed class VirtualGameCardPanel : Panel
             }
         }
         finally { ResumeLayout(false); }
+        _realizedFirst = first; _realizedLast = last;
     }
 
     private void ClearRealized()
     {
         foreach (var card in _realized.Values) { Controls.Remove(card); card.Dispose(); }
         _realized.Clear();
+        _realizedFirst = -1; _realizedLast = -1;
     }
 
     protected override void Dispose(bool disposing)
