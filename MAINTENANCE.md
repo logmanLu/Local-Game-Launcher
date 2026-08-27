@@ -8,6 +8,7 @@
 - Made savedata compatibility lossless through first-level game edits by cloning `GameEntry` extension data. The retired `SaveMethod` is now read-only for old databases, cleared during normalization, and omitted from future JSON writes.
 - Hardened image and game deletion transactions: a failed database save restores the in-memory record/default-cover reference, and a post-save managed-image cleanup failure is logged without falsely reporting the completed save as failed.
 - Added release-candidate version parsing and Debug logging for `Launcher_<version>rc.exe`; release candidates rank above beta and alpha when the same core version is selected.
+- Corrected fixed-launcher handoff for new preview suffixes. Under auto-latest, a newer embedded fixed Launcher remains active instead of delegating to an older remembered preview that cannot parse or display the RC; it records the matching versioned RC as last used without an eager directory scan.
 
 ### 2.1.1a (alpha)
 

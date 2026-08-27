@@ -271,6 +271,22 @@ public sealed class MainForm : Form
     }
 
     private LauncherChoice? CurrentLauncherChoice() => ParseLauncherChoice(Application.ExecutablePath);
+    /// <summary>
+    /// The fixed Launcher.exe has no version in its filename. When a newer
+    /// fixed launcher is installed beside its matching versioned file, use its
+    /// embedded informational version to avoid handing control straight back to
+    /// an older preview which cannot recognise a newly introduced suffix.
+    /// </summary>
+    private LauncherChoice? EmbeddedFixedLauncherChoice()
+    {
+        if (CurrentLauncherChoice() is not null) return null;
+        var label = typeof(MainForm).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion?.Split('+')[0] ?? "";
+        var path = Path.Combine(_store.Paths.Root, "Launcher_" + label.Replace('.', '_') + ".exe");
+        return File.Exists(path) ? ParseLauncherChoice(path) : null;
+    }
     private LauncherChoice? LastUsedLauncherChoice()
     {
         var label = _store.Data.Settings.LastLauncherVersion;
@@ -294,6 +310,21 @@ public sealed class MainForm : Form
         if (selection is "auto-latest" or "auto-stable")
         {
             target = LastUsedLauncherChoice();
+            // Keep auto-stable pinned to a stable executable. For auto-latest,
+            // a newly copied fixed Launcher.exe may itself contain a newer
+            // preview parser than the remembered executable. Prefer that local
+            // implementation without enumerating all versioned files.
+            var embedded = selection == "auto-latest" ? EmbeddedFixedLauncherChoice() : null;
+            if (embedded is not null && (target is null || IsNewerLauncher(embedded, target)))
+            {
+                if (!string.Equals(_store.Data.Settings.LastLauncherVersion, embedded.FullLabel, StringComparison.OrdinalIgnoreCase))
+                {
+                    _store.Data.Settings.LastLauncherVersion = embedded.FullLabel;
+                    _store.Save();
+                }
+                AppLog.Information("UI", $"Keeping newer fixed launcher version '{embedded.FullLabel}' instead of remembered '{target?.FullLabel ?? "none"}'.");
+                return false;
+            }
             // A first installation has no remembered version, so only that
             // bootstrap case performs an immediate scan.
             if (target is null) target = ResolveLauncherSelection(DiscoverLaunchers());
