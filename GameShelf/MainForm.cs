@@ -1849,10 +1849,15 @@ public sealed class MainForm : Form
             using var d = new OpenFileDialog { Filter = "Executable (*.exe)|*.exe", InitialDirectory = _store.Data.RcRootPath };
             if (d.ShowDialog() == DialogResult.OK) { try { gamePath.Text = _store.ToRcRelativePath(d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
         }); var gamePanel = new FlowLayoutPanel(); gamePanel.Controls.Add(gamePath); gamePanel.Controls.Add(gamePick); Row("Game path (relative to rc)", gamePanel, () => gamePath.Text = "");
-        string SaveRootDialogDirectory() => _store.ResolveSaveRoot(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text);
+        string SaveRootDialogDirectory()
+        {
+            var directory = _store.ResolveSaveRoot(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text);
+            AppLog.Debug("UI", $"Opening Save Path selector at '{directory}'.");
+            return directory;
+        }
         var savePath = new TextBox { Text = draft.SavePath, ReadOnly = true, Width = 450 }; var savePick = CreateIconButton("▣", "Choose save file", (_, _) =>
         {
-            using var d = new OpenFileDialog { InitialDirectory = SaveRootDialogDirectory() };
+            using var d = new OpenFileDialog { InitialDirectory = SaveRootDialogDirectory(), ClientGuid = Guid.NewGuid(), RestoreDirectory = true };
             if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
         }); var saveFolder = CreateIconButton("▤", "Choose save folder", (_, _) =>
         {

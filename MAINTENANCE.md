@@ -6,6 +6,7 @@
 
 - Added a managed global default cover to second-level management. It uses the normal cover crop/zoom workflow, is stored alongside the managed cover images, and becomes the fallback artwork for every game that has no individual image; removing it restores the built-in missing-image placeholder.
 - Game executable selection now starts in the configured `rc` root. Save file/folder selection receives the currently chosen resolved save root exactly (`.` game directory, AppData or Documents), rather than its parent user-profile directory.
+- The native Save file dialog is assigned a fresh client GUID for each invocation. This prevents Windows' remembered Open-dialog location from overriding the selected Save root; debug logs record the requested root as `Opening Save Path selector at ...`.
 - Simplified detail metadata by removing the separate **Save root** line. The **Save** line now displays a portable root prefix (`.`, `AppData` or `Documents`) together with the stored relative path, while opening the same resolved absolute target when clicked.
 
 ### 2.1.0 (stable)
