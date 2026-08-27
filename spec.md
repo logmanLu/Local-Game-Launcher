@@ -80,7 +80,7 @@ The legacy `GameEntry.SaveMethod` field is retained only so older data can be re
 - A save root of `.` means the directory containing the resolved game executable.
 - Built-in portable save roots are `.` (Game directory), `%USERPROFILE%\\Documents`, and `%USERPROFILE%\\AppData`. Environment variables are expanded on the current computer, supporting a different Windows user profile.
 - Absolute legacy paths are readable for compatibility, but new selections are normalized to their corresponding relative form.
-- The game-file picker starts in the configured `rc` directory. Save file/folder pickers receive the resolved directory for the currently selected save root exactly (game directory for `.`, or the current user's AppData/Documents root). The Save file dialog uses an isolated native-dialog client state, so a previously visited folder cannot override that requested root.
+- The game-file picker starts in the configured `rc` directory. Save file/folder pickers receive the resolved directory for the currently selected save root exactly (game directory for `.`, or the current user's AppData/Documents root). The Save file dialog uses an isolated native-dialog client state, and the Save folder dialog sets both its `InitialDirectory` and `SelectedPath`, so a previously visited folder cannot override that requested root.
 
 ## 5. Permanent visual and window model
 

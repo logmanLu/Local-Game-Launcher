@@ -1861,7 +1861,8 @@ public sealed class MainForm : Form
             if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
         }); var saveFolder = CreateIconButton("▤", "Choose save folder", (_, _) =>
         {
-            using var d = new FolderBrowserDialog { SelectedPath = SaveRootDialogDirectory() };
+            var directory = SaveRootDialogDirectory();
+            using var d = new FolderBrowserDialog { InitialDirectory = directory, SelectedPath = directory };
             if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.SelectedPath); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
         }); var savePanel = new FlowLayoutPanel(); savePanel.Controls.Add(savePath); savePanel.Controls.Add(savePick); savePanel.Controls.Add(saveFolder); Row("Save path (relative)", savePanel, () => savePath.Text = "");
         var regionChoices = _store.Data.RegionCommands.Keys.OrderBy(id => id).Select(id => new Selection<int>(id, RegionAlias(id))).ToList(); var region = ChoiceCombo(regionChoices, draft.RegionCommandId); Row("Region command", region, () => SelectChoice(region, 0));
