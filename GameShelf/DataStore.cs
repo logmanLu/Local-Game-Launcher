@@ -115,9 +115,15 @@ public sealed class DataStore : IDisposable
     {
         var game = GetGame(id);
         var image = ImagePath(game);
-        Data.Games.Remove(game);
-        if (!string.IsNullOrEmpty(image) && File.Exists(image)) File.Delete(image);
-        Save();
+        var index = Data.Games.IndexOf(game);
+        Data.Games.RemoveAt(index);
+        try { Save(); }
+        catch
+        {
+            Data.Games.Insert(index, game);
+            throw;
+        }
+        DeleteManagedImage(image, $"game {id} cover");
     }
 
     public GameEntry GetGame(int id) => Data.Games.FirstOrDefault(g => g.Id == id) ?? throw new InvalidOperationException("Game not found.");
@@ -141,7 +147,6 @@ public sealed class DataStore : IDisposable
         if (relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar)) throw new InvalidOperationException("The game executable must be inside the configured rc root folder.");
         return relative;
     }
-    public string SaveRootName(int id) => Data.SaveRoots.FirstOrDefault(root => root.Id == id)?.Name ?? "Game directory";
     public string ResolveSaveRoot(int saveRootId, string storedGamePath)
     {
         var root = Data.SaveRoots.FirstOrDefault(item => item.Id == saveRootId) ?? Data.SaveRoots.First(item => item.Id == Defaults.SaveRootGameDirectoryId);
@@ -198,7 +203,9 @@ public sealed class DataStore : IDisposable
         proposed.GameStatusId = current.GameStatusId;
         proposed.Title = TextRules.TrimGraphemes(proposed.Title, 50, "unknown");
         proposed.Note = TextRules.TrimGraphemes(proposed.Note, 150, "");
-        proposed.SaveMethod = TextRules.TrimGraphemes(proposed.SaveMethod, 20, "");
+        // SaveMethod is a read-only compatibility field for pre-save-root
+        // databases.  Never let an edit preserve or re-emit it.
+        proposed.SaveMethod = "";
         Data.Games[index] = proposed;
         NormalizeAndValidatePaths();
         Save();
@@ -213,8 +220,13 @@ public sealed class DataStore : IDisposable
         var old = ImagePath(game);
         game.ImageFile = targetName;
         try { Save(); }
-        catch { game.ImageFile = Path.GetFileName(old); if (File.Exists(target)) File.Delete(target); throw; }
-        if (!string.IsNullOrEmpty(old) && File.Exists(old)) File.Delete(old);
+        catch
+        {
+            game.ImageFile = Path.GetFileName(old);
+            DeleteManagedImage(target, $"uncommitted game {gameId} cover");
+            throw;
+        }
+        DeleteManagedImage(old, $"game {gameId} replaced cover");
     }
     public void SetDefaultImage(string source)
     {
@@ -224,15 +236,33 @@ public sealed class DataStore : IDisposable
         var old = DefaultImagePath;
         Data.DefaultImageFile = targetName;
         try { Save(); }
-        catch { Data.DefaultImageFile = Path.GetFileName(old); if (File.Exists(target)) File.Delete(target); throw; }
-        if (!string.IsNullOrEmpty(old) && File.Exists(old)) File.Delete(old);
+        catch
+        {
+            Data.DefaultImageFile = Path.GetFileName(old);
+            DeleteManagedImage(target, "uncommitted default cover");
+            throw;
+        }
+        DeleteManagedImage(old, "replaced default cover");
     }
     public void ClearDefaultImage()
     {
         var old = DefaultImagePath;
+        var oldFile = Data.DefaultImageFile;
         Data.DefaultImageFile = "";
-        Save();
-        if (!string.IsNullOrEmpty(old) && File.Exists(old)) File.Delete(old);
+        try { Save(); }
+        catch
+        {
+            Data.DefaultImageFile = oldFile;
+            throw;
+        }
+        DeleteManagedImage(old, "cleared default cover");
+    }
+
+    private static void DeleteManagedImage(string? path, string description)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+        try { File.Delete(path); }
+        catch (Exception ex) { AppLog.Warning("DataStore", $"Could not remove {description} '{path}' after database save; it may be cleaned up manually.", ex); }
     }
 
     public void AddDimension(string name, bool isMultiSelect = false)
@@ -521,7 +551,7 @@ public sealed class DataStore : IDisposable
         };
         var launcherSelection = Data.Settings.LauncherSelection?.Trim().ToLowerInvariant() ?? "";
         Data.Settings.LauncherSelection = launcherSelection is "auto-latest" or "auto-stable"
-            || System.Text.RegularExpressions.Regex.IsMatch(launcherSelection, "^exact:[0-9]+\\.[0-9]+\\.[0-9]+(?:[ab][0-9]*)?$")
+            || System.Text.RegularExpressions.Regex.IsMatch(launcherSelection, "^exact:[0-9]+\\.[0-9]+\\.[0-9]+(?:(?:a|b|rc)[0-9]*)?$")
                 ? launcherSelection
                 : "auto-latest";
         Data.Settings.LastLauncherVersion ??= "";
@@ -572,6 +602,9 @@ public sealed class DataStore : IDisposable
             Data.Settings.SelectedGameStatusFilter = null;
         foreach (var g in Data.Games)
         {
+            // Do not write retired pre-v5 save-root data back out after any
+            // subsequent normalization/save operation.
+            g.SaveMethod = "";
             if (Path.IsPathFullyQualified(g.GamePath) && !string.IsNullOrWhiteSpace(Data.RcRootPath))
             {
                 var relative = Path.GetRelativePath(Data.RcRootPath, g.GamePath);

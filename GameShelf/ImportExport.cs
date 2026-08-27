@@ -96,5 +96,23 @@ public sealed class PackageService(DataStore store)
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }
 
-    public static GameEntry Clone(GameEntry game) => new() { Id = game.Id, Title = game.Title, ImageFile = game.ImageFile, Note = game.Note, GamePath = game.GamePath, SaveMethod = game.SaveMethod, SaveRootId = game.SaveRootId, SavePath = game.SavePath, PlayStatusId = game.PlayStatusId, GameStatusId = game.GameStatusId, RegionCommandId = game.RegionCommandId, Tags = [.. game.Tags], MultiTags = game.MultiTags.Select(values => new List<int>(values)).ToList() };
+    public static GameEntry Clone(GameEntry game) => new()
+    {
+        Id = game.Id,
+        Title = game.Title,
+        ImageFile = game.ImageFile,
+        Note = game.Note,
+        GamePath = game.GamePath,
+        SaveMethod = game.SaveMethod,
+        SaveRootId = game.SaveRootId,
+        SavePath = game.SavePath,
+        PlayStatusId = game.PlayStatusId,
+        GameStatusId = game.GameStatusId,
+        RegionCommandId = game.RegionCommandId,
+        Tags = [.. game.Tags],
+        MultiTags = game.MultiTags.Select(values => new List<int>(values)).ToList(),
+        // First-level editing replaces the game DTO. Clone extension data so
+        // fields introduced by a newer launcher survive that replacement.
+        UnknownFields = game.UnknownFields?.ToDictionary(item => item.Key, item => item.Value.Clone())
+    };
 }
