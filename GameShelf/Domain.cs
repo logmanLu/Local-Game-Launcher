@@ -85,6 +85,8 @@ public sealed class GameEntry
     public string ImageFile { get; set; } = "";
     public string Note { get; set; } = "";
     public string GamePath { get; set; } = "";
+    /// <summary>Read-only compatibility field for pre-save-root databases.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public string SaveMethod { get; set; } = "";
     public int SaveRootId { get; set; } = Defaults.SaveRootGameDirectoryId;
     public string SavePath { get; set; } = "";

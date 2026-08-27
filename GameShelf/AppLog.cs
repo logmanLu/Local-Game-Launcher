@@ -100,7 +100,11 @@ public static class AppLog
             .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
             .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
             .FirstOrDefault()?.InformationalVersion ?? "";
-        return informationalVersion.Contains("a", StringComparison.OrdinalIgnoreCase) || informationalVersion.Contains("b", StringComparison.OrdinalIgnoreCase) ? LogLevel.Debug : LogLevel.Information;
+        return informationalVersion.Contains("a", StringComparison.OrdinalIgnoreCase)
+            || informationalVersion.Contains("b", StringComparison.OrdinalIgnoreCase)
+            || informationalVersion.Contains("rc", StringComparison.OrdinalIgnoreCase)
+                ? LogLevel.Debug
+                : LogLevel.Information;
 #endif
     }
 }

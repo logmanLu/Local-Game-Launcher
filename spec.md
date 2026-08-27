@@ -1,6 +1,6 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.1.1a (alpha)
+**Current application specification:** 2.1.1 (stable)
 **Savedata format:** v5
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
@@ -22,7 +22,7 @@ The compiled assembly name is `GameShelf.exe`. The distributable launcher conven
 
 - `Launcher.exe` is the fixed local launch target; a shortcut may point to it.
 - `Launcher_<version>.exe` is the versioned copy, for example `Launcher_2_0_1.exe`.
-- Alpha and beta versions have an `a` or `b` suffix. Both preview package types retain Debug diagnostics; a version with no suffix is a stable Release package.
+- Alpha, beta and release-candidate versions have an `a`, `b` or `rc` suffix. Every preview package retains Debug diagnostics; a version with no suffix is a stable Release package.
 
 `AppContext.BaseDirectory` is the application root. The executable must remain beside its data folders:
 
@@ -69,9 +69,9 @@ The user-owned `savedata/` directory is never included in source-control or rele
 | `PlayStatuses` / `GameStatuses` | Ordered status definitions: ID, display name, RGB/hex colour, white vector icon, default flag, and (for system game statuses) role. |
 | `Games` | Individual game records: ID, title, managed cover filename, note, relative game/save paths, selected save root, statuses, region command, one value per single-select dimension, and one-or-more values per multi-select dimension. |
 
-Every persistent DTO supports `JsonExtensionData`. Therefore unknown properties from a newer launcher are round-tripped rather than intentionally discarded. Older formats are backed up in `savedata/backups/` before in-place normalization. A newer savedata version is not downgraded.
+Every persistent DTO supports `JsonExtensionData`. Therefore unknown properties from a newer launcher are round-tripped rather than intentionally discarded, including when first-level editing replaces a `GameEntry` with its draft copy. Older formats are backed up in `savedata/backups/` before in-place normalization. A newer savedata version is not downgraded.
 
-The legacy `GameEntry.SaveMethod` field is retained only so older data can be read; current UI and logic use `SaveRootId` and `SavePath`. The retired `Settings.RunningGameProcesses` field is removed during normalization so it cannot be re-emitted from old savedata.
+The legacy `GameEntry.SaveMethod` field is retained only so older data can be read; current UI and logic use `SaveRootId` and `SavePath`. Normalization clears the legacy field and JSON ignores its default value, so it is not emitted again. The retired `Settings.RunningGameProcesses` field is removed during normalization so it cannot be re-emitted from old savedata.
 
 ### 4.1 Path rules
 
@@ -89,10 +89,10 @@ The presentation is permanently dark; there is no day/night theme or runtime the
 GameShelf uses the normal native Windows title bar. Windows owns caption dragging, system menu, Snap layouts, resize borders and minimize/maximize/close controls. Directly below it is a native Windows menu bar:
 
 - The menu is collapsed by default and reveals when the pointer reaches the top reveal band. It retracts after the pointer leaves the menu area; this works in normal and F11 fullscreen windows.
-- **Version** (click or `Alt+V` after revealing the menu) stores one launch policy. It offers **Automatically select latest version**, **Automatically select latest stable version**, each available stable *major.minor* series, and at most one eligible preview (alpha or beta).
+- **Version** (click or `Alt+V` after revealing the menu) stores one launch policy. It offers **Automatically select latest version**, **Automatically select latest stable version**, each available stable *major.minor* series, and at most one eligible preview (alpha, beta or release candidate).
 - A stable series entry such as `2.0` resolves to the highest available stable patch in that series at the moment it is selected, for example `Launcher_2_0_1.exe`. The resulting exact patch is pinned, so even a later `2.0.2` does not replace it automatically.
-- Automatic policies are passive: startup first opens the last versioned executable that actually ran, without enumerating release files. After the first page is shown, a background scan discovers the eligible automatic target. If it is newer, the Version menu exposes **Update to <version>**; only choosing that item restarts the launcher. A first installation with no remembered version performs one bootstrap scan.
-- A preview is shown only when its core version is strictly newer than the highest available stable release. For example, `2.0.1a` is shown with `2.0.0`, but is hidden when stable `2.0.1` exists. When alpha and beta share a core version, beta wins. Selecting a preview pins that exact executable.
+- Automatic policies are passive: startup first opens the last versioned executable that actually ran, without enumerating release files. An updated fixed `Launcher.exe` may retain itself only when its embedded version is newer than that remembered auto-latest preview and its matching versioned executable is present; this prevents an old parser from hiding a newly introduced preview suffix. After the first page is shown, a background scan discovers the eligible automatic target. If it is newer, the Version menu exposes **Update to <version>**; only choosing that item restarts the launcher. A first installation with no remembered version performs one bootstrap scan.
+- A preview is shown only when its core version is strictly newer than the highest available stable release. For example, `2.0.1a` is shown with `2.0.0`, but is hidden when stable `2.0.1` exists. When alpha, beta and release candidate share a core version, `rc` wins over beta, and beta wins over alpha. Selecting a preview pins that exact executable.
 - The persisted launcher policy is resolved during form loading, before the first paint. All persisted window-state restoration is deliberately deferred until that resolution succeeds in the final executable. The fixed `Launcher.exe` skips saving state while handing off, so it cannot overwrite a persisted fullscreen request or briefly enter fullscreen/maximized before the chosen version takes over.
 - **Language** (click or `Alt+L`) persists the chosen UI language and restarts the application.
 - The same native menu and reveal behaviour remain available in F11 fullscreen.
@@ -143,7 +143,7 @@ Entering game detail always refreshes the selected game path state. The page is 
 
 1. **Section 1** — left **1A** is a 3:4 portrait cover; right **1B** contains number/Launch, title, and tags. `1B1` splits number and Launch evenly, and `1B1`, `1B2`, and `1B3` may grow to their content. The right side determines the section height; the cover follows that height at 3:4, is vertically aligned to it, and has a 480-pixel minimum where the available column permits.
 2. **Section 2** — note (**2A**) and play/game lamps (**2B**) split at the horizontal centre. The lamps appear side-by-side, retain their artwork aspect ratio, and match the note reservation height.
-3. **Section 3** — game path, save root, save path, region command and export action. Long paths wrap at Windows path separators instead of creating horizontal scrolling.
+3. **Section 3** — game path, the combined save-path indicator/path, region command and export action. Long paths wrap at Windows path separators instead of creating horizontal scrolling.
 
 Double-clicking either detail status lamp changes and repaints only the corresponding lamp; it neither rebuilds the detail page nor changes its vertical scroll position.
 Every detail tag chip is a measured single-line box: its width grows to contain its complete dimension/value string, with no internal text wrapping or ellipsis. Single-select chips use a greedy left-to-right layout and move an entire chip to the next row only before exceeding the right-side section width. Multi-select values group by dimension: one orange `Dimension :` chip is right-aligned in a common description column, followed by its individual orange value chips in a common left-aligned value column. Values that do not fit beside a preceding chip move as whole chips to an indented next row.
@@ -193,7 +193,7 @@ Launch resolves the stored relative game path against `RcRootPath`. A direct lau
 
 Logs are written to `log/gameshelf-YYYY-MM-DD.log` next to the executable. Files older than 30 days are removed at startup. Levels are `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, and `None`.
 
-- Alpha and beta builds default to `Debug`.
+- Alpha, beta and release-candidate builds default to `Debug`.
 - Stable builds default to `Information`.
 - The `GAMESHELF_LOG_LEVEL` environment variable overrides the threshold for a diagnostic run.
 
@@ -205,10 +205,10 @@ Unhandled UI, runtime and task exceptions are logged. Database writes use a temp
 
 The branch and release workflow is:
 
-1. `develop` is the single long-lived integration branch. Create each alpha or beta work line as `feature/<version>` from `develop`. Git cannot host both a `develop` branch and `develop/<version>` branches, so the `feature/` prefix is intentional.
+1. `develop` is the single long-lived integration branch. Create each alpha, beta or release-candidate work line as `feature/<version>` from `develop`. Git cannot host both a `develop` branch and `develop/<version>` branches, so the `feature/` prefix is intentional.
 2. Before every commit, push, PR update, merge, or release publication, reread this specification and correct any statement that no longer matches the implementation. Update `MAINTENANCE.md` with the patch-specific history and troubleshooting note at the same time.
 3. Commit and push `feature/<version>`, then open or update its pull request to `develop`.
-4. At the end of each alpha or beta version cycle, merge `feature/<version>` into `develop` and delete that feature branch. A beta prerelease, when requested, is built and published from `develop`.
+4. At the end of each alpha, beta or release-candidate version cycle, merge `feature/<version>` into `develop` and delete that feature branch. A beta prerelease, when requested, is built and published from `develop`.
 5. A stable release contains no new implementation work: it is the exact final tested beta commit. When the user designates that beta as stable, merge `develop` into `main` and publish the stable package from that unchanged commit.
 6. Build a requested package only after checking and terminating a prior `Launcher` process if necessary. Produce `Launcher.exe` first, then copy it to `Launcher_<version>.exe`.
 7. Never include `savedata/` in source control or release assets. Publish only when expressly requested.
