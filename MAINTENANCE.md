@@ -1,6 +1,10 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.1rc` (release candidate)
+**Current application patch:** `2.1.1` (stable)
+
+### 2.1.1 (stable)
+
+- Promoted the final tested 2.1.1 release-candidate functionality unchanged to the 2.1.1 stable release. The only package-level change is stable version metadata, so the default log threshold changes from Debug to Information.
 
 ### 2.1.1rc (release candidate)
 
