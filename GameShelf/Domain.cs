@@ -13,6 +13,8 @@ public sealed class AppData
     public Dictionary<int, string> RegionCommands { get; set; } = new() { [0] = "" };
     public Dictionary<int, string> RegionAliases { get; set; } = new() { [0] = "none" };
     public string RcRootPath { get; set; } = "";
+    /// <summary>Managed fallback cover used when a game has no individual cover image.</summary>
+    public string DefaultImageFile { get; set; } = "";
     public List<SaveRoot> SaveRoots { get; set; } = Defaults.SaveRoots();
     public List<TagDimension> TagSchema { get; set; } = [];
     public List<GameStatus> PlayStatuses { get; set; } = Defaults.PlayStatuses();

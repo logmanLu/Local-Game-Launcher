@@ -1260,7 +1260,8 @@ public sealed class MainForm : Form
     }
     private string GameCardImageStamp(GameEntry game)
     {
-        return game.ImageFile ?? string.Empty;
+        // A default-cover change affects every game with no personal cover.
+        return (game.ImageFile ?? string.Empty) + "|" + (_store.Data.DefaultImageFile ?? string.Empty);
     }
     private bool TryCloneCachedCover(string stamp, out Image image)
     {
@@ -1287,7 +1288,7 @@ public sealed class MainForm : Form
         else
         {
             cover.Image = ImageService.MissingImage(); cover.Tag = "pending:" + stamp;
-            QueueLibraryCoverLoad(game.Id, stamp, _store.ImagePath(game));
+            QueueLibraryCoverLoad(game.Id, stamp, _store.CoverImagePath(game));
         }
         old?.Dispose();
     }
@@ -1444,7 +1445,10 @@ public sealed class MainForm : Form
     private static string DisplayTitle(string title) => (title ?? "").Replace("\\n", "\n");
     private Image LoadImage(GameEntry g)
     {
-        var file = _store.ImagePath(g);
+        return LoadImageFile(_store.CoverImagePath(g));
+    }
+    private static Image LoadImageFile(string file)
+    {
         try
         {
             if (string.IsNullOrEmpty(file) || !File.Exists(file)) return ImageService.MissingImage();
@@ -1452,6 +1456,16 @@ public sealed class MainForm : Form
             return new Bitmap(source); // do not hold a lock on managed images
         }
         catch { return ImageService.MissingImage(); }
+    }
+    private string SavePathDisplay(GameEntry game)
+    {
+        var root = _store.Data.SaveRoots.FirstOrDefault(item => item.Id == game.SaveRootId);
+        var template = root?.PathTemplate ?? ".";
+        var prefix = template == "." ? "."
+            : template.Contains("AppData", StringComparison.OrdinalIgnoreCase) ? "AppData"
+            : template.Contains("Documents", StringComparison.OrdinalIgnoreCase) ? "Documents"
+            : root?.Name ?? "Save root";
+        return string.IsNullOrWhiteSpace(game.SavePath) ? prefix : prefix.TrimEnd('\\', '/') + "\\" + game.SavePath.TrimStart('\\', '/');
     }
     private string StatusName(StatusKind kind, int id) => (kind == StatusKind.Play ? _store.Data.PlayStatuses : _store.Data.GameStatuses).FirstOrDefault(s => s.Id == id)?.Name ?? _t["none"];
     private Color StatusColor(StatusKind kind, int id)
@@ -1682,8 +1696,7 @@ public sealed class MainForm : Form
         // Section 3 uses the same full width as sections 1 and 2.
         var metadata = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, Width = sectionWidth, AutoSize = true, WrapContents = false, Padding = new Padding(0, S(16), 0, 0), BackColor = page.BackColor };
         metadata.Controls.Add(PathLink("Game: " + (string.IsNullOrEmpty(game.GamePath) ? _t["none"] : game.GamePath), gamePath, gameValid, sectionWidth));
-        metadata.Controls.Add(DetailLabel("Save root: " + _store.SaveRootName(game.SaveRootId), sectionWidth));
-        metadata.Controls.Add(PathLink("Save: " + (string.IsNullOrEmpty(game.SavePath) ? _t["none"] : game.SavePath), savePath, saveValid, sectionWidth));
+        metadata.Controls.Add(PathLink("Save: " + SavePathDisplay(game), savePath, saveValid, sectionWidth));
         metadata.Controls.Add(DetailLabel("Region: " + RegionAlias(game.RegionCommandId), sectionWidth));
         var export = CreateIconButton("⇩", "Export game", (_, _) => ExportGame(game)); export.Margin = new Padding(0, S(28), 0, 0); metadata.Controls.Add(export);
 
@@ -1831,8 +1844,27 @@ public sealed class MainForm : Form
         var note = new TextBox { Text = draft.Note, Multiline = true, Height = 95 }; Row("Note", note, () => note.Text = "");
         var gamePath = new TextBox { Text = draft.GamePath, ReadOnly = true, Width = 555 };
         var saveRoot = ChoiceCombo(_store.Data.SaveRoots.Select(root => new Selection<int>(root.Id, root.Name)).ToList(), draft.SaveRootId); Row("Save root", saveRoot, () => SelectChoice(saveRoot, Defaults.SaveRootGameDirectoryId));
-        var gamePick = CreateIconButton("▣", "Choose game executable", (_, _) => { using var d = new OpenFileDialog { Filter = "Executable (*.exe)|*.exe" }; if (d.ShowDialog() == DialogResult.OK) { try { gamePath.Text = _store.ToRcRelativePath(d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }); var gamePanel = new FlowLayoutPanel(); gamePanel.Controls.Add(gamePath); gamePanel.Controls.Add(gamePick); Row("Game path (relative to rc)", gamePanel, () => gamePath.Text = "");
-        var savePath = new TextBox { Text = draft.SavePath, ReadOnly = true, Width = 450 }; var savePick = CreateIconButton("▣", "Choose save file", (_, _) => { using var d = new OpenFileDialog(); if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }); var saveFolder = CreateIconButton("▤", "Choose save folder", (_, _) => { using var d = new FolderBrowserDialog(); if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.SelectedPath); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }); var savePanel = new FlowLayoutPanel(); savePanel.Controls.Add(savePath); savePanel.Controls.Add(savePick); savePanel.Controls.Add(saveFolder); Row("Save path (relative)", savePanel, () => savePath.Text = "");
+        var gamePick = CreateIconButton("▣", "Choose game executable", (_, _) =>
+        {
+            using var d = new OpenFileDialog { Filter = "Executable (*.exe)|*.exe", InitialDirectory = _store.Data.RcRootPath };
+            if (d.ShowDialog() == DialogResult.OK) { try { gamePath.Text = _store.ToRcRelativePath(d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
+        }); var gamePanel = new FlowLayoutPanel(); gamePanel.Controls.Add(gamePath); gamePanel.Controls.Add(gamePick); Row("Game path (relative to rc)", gamePanel, () => gamePath.Text = "");
+        string SaveRootDialogDirectory()
+        {
+            var directory = _store.ResolveSaveRoot(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text);
+            AppLog.Debug("UI", $"Opening Save Path selector at '{directory}'.");
+            return directory;
+        }
+        var savePath = new TextBox { Text = draft.SavePath, ReadOnly = true, Width = 450 }; var savePick = CreateIconButton("▣", "Choose save file", (_, _) =>
+        {
+            using var d = new OpenFileDialog { InitialDirectory = SaveRootDialogDirectory(), ClientGuid = Guid.NewGuid(), RestoreDirectory = true };
+            if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
+        }); var saveFolder = CreateIconButton("▤", "Choose save folder", (_, _) =>
+        {
+            var directory = SaveRootDialogDirectory();
+            using var d = new FolderBrowserDialog { InitialDirectory = directory, SelectedPath = directory };
+            if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.SelectedPath); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
+        }); var savePanel = new FlowLayoutPanel(); savePanel.Controls.Add(savePath); savePanel.Controls.Add(savePick); savePanel.Controls.Add(saveFolder); Row("Save path (relative)", savePanel, () => savePath.Text = "");
         var regionChoices = _store.Data.RegionCommands.Keys.OrderBy(id => id).Select(id => new Selection<int>(id, RegionAlias(id))).ToList(); var region = ChoiceCombo(regionChoices, draft.RegionCommandId); Row("Region command", region, () => SelectChoice(region, 0));
         var multiTagPickers = new Dictionary<int, FlowLayoutPanel>();
         // Keep first-level selection controls in the same grouped order as
@@ -1905,6 +1937,19 @@ public sealed class MainForm : Form
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
+    private bool SelectAndSaveDefaultCover(string sourcePath)
+    {
+        using var cropped = CropCover(sourcePath);
+        if (cropped is null) return false;
+        var temporary = Path.Combine(Path.GetTempPath(), "gameshelf-default-cover-" + Guid.NewGuid().ToString("N") + ".png");
+        try
+        {
+            cropped.Save(temporary, System.Drawing.Imaging.ImageFormat.Png);
+            _store.SetDefaultImage(temporary);
+            return true;
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
     private Bitmap? CropCover(string sourcePath)
     {
         using var loaded = Image.FromFile(sourcePath); using var source = new Bitmap(loaded);
@@ -1969,6 +2014,7 @@ public sealed class MainForm : Form
         _page = "global"; BuildTop(false); Clear();
         var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Width = Math.Max(900, _content.ClientSize.Width - 80), Padding = new Padding(S(8)) };
         stack.Controls.Add(RcRootSection());
+        stack.Controls.Add(DefaultCoverSection());
         stack.Controls.Add(ArraySection("Save roots", _store.Data.SaveRoots.Select(root => (root.Id, root.Name)), "＋", AddSaveRootTile, SaveRootContext));
         stack.Controls.Add(ArraySection(_t["Region commands"], _store.Data.RegionCommands.Keys.Where(id => id != 0).Select(id => (id, RegionAlias(id))), "＋", AddRegionTile, RegionContext));
         stack.Controls.Add(ArraySection("Play " + _t["Statuses"], _store.Data.PlayStatuses.Select(x => (x.Id, x.Name)), "＋", () => AddStatusTile(StatusKind.Play), id => StatusContext(StatusKind.Play, id)));
@@ -1990,6 +2036,38 @@ public sealed class MainForm : Form
         var stored = string.IsNullOrWhiteSpace(_store.Data.RcRootPath) ? "Set rc root folder" : _store.Data.RcRootPath;
         var tile = ElementTile(stored, false, ChooseRcRoot, null); tile.Left = S(30); tile.Top = S(75); tile.Width = Math.Min(section.Width - S(60), S(680));
         section.Controls.Add(tile);
+        return section;
+    }
+    private Control DefaultCoverSection()
+    {
+        var sectionWidth = Math.Max(860, _content.ClientSize.Width - 100);
+        var section = new Panel { Width = sectionWidth, Height = S(360), Margin = new Padding(0, 0, 0, S(32)), BackColor = Color.FromArgb(35, 38, 39) };
+        section.Controls.Add(new Label { Text = "Default game cover", Left = S(22), Top = S(16), Width = section.Width - S(44), Height = S(40), Font = new Font(Font.FontFamily, S(21), FontStyle.Bold), ForeColor = Color.White });
+        section.Controls.Add(new Label { Text = "Used when a game has no individual cover image.", Left = S(22), Top = S(55), Width = section.Width - S(44), Height = S(30), Font = new Font(Font.FontFamily, S(13), FontStyle.Bold), ForeColor = Color.LightBlue });
+        var preview = new PictureBox { Left = S(30), Top = S(95), Width = S(165), Height = S(220), SizeMode = PictureBoxSizeMode.StretchImage, BorderStyle = BorderStyle.FixedSingle, Image = LoadImageFile(_store.DefaultImagePath), AccessibleName = "Default game cover" };
+        var choose = CreateIconButton("✂", "Choose and crop default cover", (_, _) =>
+        {
+            using var dialog = new OpenFileDialog { Filter = "Images (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg" };
+            if (dialog.ShowDialog() != DialogResult.OK) return;
+            try
+            {
+                if (!SelectAndSaveDefaultCover(dialog.FileName)) return;
+                var old = preview.Image;
+                preview.Image = LoadImageFile(_store.DefaultImagePath);
+                old?.Dispose();
+            }
+            catch (Exception ex) { MessageBox.Show(ex.Message); }
+        });
+        choose.Left = S(225); choose.Top = S(115); section.Controls.Add(preview); section.Controls.Add(choose);
+        if (!string.IsNullOrWhiteSpace(_store.Data.DefaultImageFile))
+        {
+            var clear = CreateIconButton("×", "Remove default cover", (_, _) =>
+            {
+                try { _store.ClearDefaultImage(); ShowGlobal(true); }
+                catch (Exception ex) { MessageBox.Show(ex.Message); }
+            });
+            clear.Left = S(225); clear.Top = S(215); section.Controls.Add(clear);
+        }
         return section;
     }
     private void ChooseRcRoot()
