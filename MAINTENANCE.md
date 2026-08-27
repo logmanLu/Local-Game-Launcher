@@ -1,6 +1,26 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.0` (stable)
+**Current application patch:** `2.1.1` (stable)
+
+### 2.1.1 (stable)
+
+- Promoted the final tested 2.1.1 release-candidate functionality unchanged to the 2.1.1 stable release. The only package-level change is stable version metadata, so the default log threshold changes from Debug to Information.
+
+### 2.1.1rc (release candidate)
+
+- Performed a full source/data/documentation audit before release-candidate testing. `spec.md` remains the only current architecture contract; this file is the chronological maintenance record.
+- Made savedata compatibility lossless through first-level game edits by cloning `GameEntry` extension data. The retired `SaveMethod` is now read-only for old databases, cleared during normalization, and omitted from future JSON writes.
+- Hardened image and game deletion transactions: a failed database save restores the in-memory record/default-cover reference, and a post-save managed-image cleanup failure is logged without falsely reporting the completed save as failed.
+- Added release-candidate version parsing and Debug logging for `Launcher_<version>rc.exe`; release candidates rank above beta and alpha when the same core version is selected.
+- Corrected fixed-launcher handoff for new preview suffixes. Under auto-latest, a newer embedded fixed Launcher remains active instead of delegating to an older remembered preview that cannot parse or display the RC; it records the matching versioned RC as last used without an eager directory scan.
+
+### 2.1.1a (alpha)
+
+- Added a managed global default cover to second-level management. It uses the normal cover crop/zoom workflow, is stored alongside the managed cover images, and becomes the fallback artwork for every game that has no individual image; removing it restores the built-in missing-image placeholder.
+- Game executable selection now starts in the configured `rc` root. Save file/folder selection receives the currently chosen resolved save root exactly (`.` game directory, AppData or Documents), rather than its parent user-profile directory.
+- The native Save file dialog is assigned a fresh client GUID for each invocation. This prevents Windows' remembered Open-dialog location from overriding the selected Save root; debug logs record the requested root as `Opening Save Path selector at ...`.
+- The separate native Save folder dialog now receives that root through both `InitialDirectory` and `SelectedPath`; this corrects the remaining Documents → user-profile jump for folder selection.
+- Simplified detail metadata by removing the separate **Save root** line. The **Save** line now displays a portable root prefix (`.`, `AppData` or `Documents`) together with the stored relative path, while opening the same resolved absolute target when clicked.
 
 ### 2.1.0 (stable)
 
@@ -258,7 +278,11 @@
 - Invalid or missing game/save paths are rendered bright red in game detail; valid paths remain light green.
 - Custom border resize areas explicitly handle `WM_SETCURSOR`, so edges and corners show the standard horizontal, vertical, or diagonal resize cursor while normal-window resizing is available.
 
-## Purpose and runtime
+## Superseded historical reference
+
+> The material below predates the current architecture and is retained only as an old release record. It is **not** an operational specification and may contradict the implementation. Use [spec.md](spec.md) for the current runtime, data format, UI, launch behaviour and release workflow.
+
+### Purpose and runtime (historical)
 
 GameShelf is a personal Windows game-library manager. It is a Windows Forms application targeting `win-x64` and is published as a self-contained, single-file executable. A target computer needs 64-bit Windows and write permission in the directory that contains `GameShelf.exe`; it does **not** need a separately installed .NET runtime.
 

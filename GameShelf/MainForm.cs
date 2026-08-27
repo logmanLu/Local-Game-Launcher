@@ -11,8 +11,16 @@ public sealed class MainForm : Form
     private sealed record LauncherChoice(string Path, int Major, int Minor, int Patch, string? Preview)
     {
         public bool IsPreview => !string.IsNullOrWhiteSpace(Preview);
-        public int PreviewKindRank => Preview?.StartsWith("b", StringComparison.OrdinalIgnoreCase) == true ? 2 : 1;
-        public int PreviewRevision => int.TryParse(Preview?[1..], out var revision) ? revision : 0;
+        public int PreviewKindRank => Preview?.StartsWith("rc", StringComparison.OrdinalIgnoreCase) == true ? 3
+            : Preview?.StartsWith("b", StringComparison.OrdinalIgnoreCase) == true ? 2 : 1;
+        public int PreviewRevision
+        {
+            get
+            {
+                var suffix = Preview?.StartsWith("rc", StringComparison.OrdinalIgnoreCase) == true ? Preview[2..] : Preview?[1..];
+                return int.TryParse(suffix, out var revision) ? revision : 0;
+            }
+        }
         public string MinorLabel => $"{Major}.{Minor}";
         public string FullLabel => $"{Major}.{Minor}.{Patch}" + (Preview ?? "");
         // Stable releases are displayed only at major.minor granularity, but
@@ -202,7 +210,7 @@ public sealed class MainForm : Form
 
     private static LauncherChoice? ParseLauncherChoice(string path)
     {
-        var match = Regex.Match(Path.GetFileNameWithoutExtension(path), @"^Launcher_(?<core>[0-9]+(?:_[0-9]+)*)(?<preview>[ab][0-9]*)?$", RegexOptions.IgnoreCase);
+        var match = Regex.Match(Path.GetFileNameWithoutExtension(path), @"^Launcher_(?<core>[0-9]+(?:_[0-9]+)*)(?<preview>(?:a|b|rc)[0-9]*)?$", RegexOptions.IgnoreCase);
         if (!match.Success) return null;
         var parts = match.Groups["core"].Value.Split('_').Select(int.Parse).ToArray();
         if (parts.Length > 3) return null;
@@ -263,6 +271,22 @@ public sealed class MainForm : Form
     }
 
     private LauncherChoice? CurrentLauncherChoice() => ParseLauncherChoice(Application.ExecutablePath);
+    /// <summary>
+    /// The fixed Launcher.exe has no version in its filename. When a newer
+    /// fixed launcher is installed beside its matching versioned file, use its
+    /// embedded informational version to avoid handing control straight back to
+    /// an older preview which cannot recognise a newly introduced suffix.
+    /// </summary>
+    private LauncherChoice? EmbeddedFixedLauncherChoice()
+    {
+        if (CurrentLauncherChoice() is not null) return null;
+        var label = typeof(MainForm).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion?.Split('+')[0] ?? "";
+        var path = Path.Combine(_store.Paths.Root, "Launcher_" + label.Replace('.', '_') + ".exe");
+        return File.Exists(path) ? ParseLauncherChoice(path) : null;
+    }
     private LauncherChoice? LastUsedLauncherChoice()
     {
         var label = _store.Data.Settings.LastLauncherVersion;
@@ -286,6 +310,21 @@ public sealed class MainForm : Form
         if (selection is "auto-latest" or "auto-stable")
         {
             target = LastUsedLauncherChoice();
+            // Keep auto-stable pinned to a stable executable. For auto-latest,
+            // a newly copied fixed Launcher.exe may itself contain a newer
+            // preview parser than the remembered executable. Prefer that local
+            // implementation without enumerating all versioned files.
+            var embedded = selection == "auto-latest" ? EmbeddedFixedLauncherChoice() : null;
+            if (embedded is not null && (target is null || IsNewerLauncher(embedded, target)))
+            {
+                if (!string.Equals(_store.Data.Settings.LastLauncherVersion, embedded.FullLabel, StringComparison.OrdinalIgnoreCase))
+                {
+                    _store.Data.Settings.LastLauncherVersion = embedded.FullLabel;
+                    _store.Save();
+                }
+                AppLog.Information("UI", $"Keeping newer fixed launcher version '{embedded.FullLabel}' instead of remembered '{target?.FullLabel ?? "none"}'.");
+                return false;
+            }
             // A first installation has no remembered version, so only that
             // bootstrap case performs an immediate scan.
             if (target is null) target = ResolveLauncherSelection(DiscoverLaunchers());
@@ -544,10 +583,6 @@ public sealed class MainForm : Form
     [DllImport("user32.dll")] private static extern bool DrawMenuBar(IntPtr window);
     [DllImport("user32.dll")] private static extern bool DestroyMenu(IntPtr menu);
 
-    // Dark styling is a product constant; savedata no longer carries a theme.
-    // Existing layout helpers use this compile-time value while their dark-only
-    // colours are progressively shared by editor controls.
-    private const bool IsDarkTheme = true;
     private void ApplyTheme()
     {
         BackColor = Color.FromArgb(27, 29, 30); ForeColor = Color.FromArgb(181, 228, 245);
@@ -1260,7 +1295,8 @@ public sealed class MainForm : Form
     }
     private string GameCardImageStamp(GameEntry game)
     {
-        return game.ImageFile ?? string.Empty;
+        // A default-cover change affects every game with no personal cover.
+        return (game.ImageFile ?? string.Empty) + "|" + (_store.Data.DefaultImageFile ?? string.Empty);
     }
     private bool TryCloneCachedCover(string stamp, out Image image)
     {
@@ -1287,7 +1323,7 @@ public sealed class MainForm : Form
         else
         {
             cover.Image = ImageService.MissingImage(); cover.Tag = "pending:" + stamp;
-            QueueLibraryCoverLoad(game.Id, stamp, _store.ImagePath(game));
+            QueueLibraryCoverLoad(game.Id, stamp, _store.CoverImagePath(game));
         }
         old?.Dispose();
     }
@@ -1444,7 +1480,10 @@ public sealed class MainForm : Form
     private static string DisplayTitle(string title) => (title ?? "").Replace("\\n", "\n");
     private Image LoadImage(GameEntry g)
     {
-        var file = _store.ImagePath(g);
+        return LoadImageFile(_store.CoverImagePath(g));
+    }
+    private static Image LoadImageFile(string file)
+    {
         try
         {
             if (string.IsNullOrEmpty(file) || !File.Exists(file)) return ImageService.MissingImage();
@@ -1452,6 +1491,25 @@ public sealed class MainForm : Form
             return new Bitmap(source); // do not hold a lock on managed images
         }
         catch { return ImageService.MissingImage(); }
+    }
+    private string SavePathDisplay(GameEntry game)
+    {
+        var root = _store.Data.SaveRoots.FirstOrDefault(item => item.Id == game.SaveRootId);
+        var template = root?.PathTemplate ?? ".";
+        var resolvedRoot = _store.ResolveSaveRoot(game.SaveRootId, game.GamePath);
+        var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var prefix = template == "." ? "."
+            : PathsEqual(resolvedRoot, documents) ? "Documents"
+            : PathsEqual(resolvedRoot, appData) ? "AppData"
+            : root?.Name ?? "Save root";
+        return string.IsNullOrWhiteSpace(game.SavePath) ? prefix : prefix.TrimEnd('\\', '/') + "\\" + game.SavePath.TrimStart('\\', '/');
+    }
+    private static bool PathsEqual(string left, string right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
+        try { return string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)), Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)), StringComparison.OrdinalIgnoreCase); }
+        catch { return false; }
     }
     private string StatusName(StatusKind kind, int id) => (kind == StatusKind.Play ? _store.Data.PlayStatuses : _store.Data.GameStatuses).FirstOrDefault(s => s.Id == id)?.Name ?? _t["none"];
     private Color StatusColor(StatusKind kind, int id)
@@ -1563,7 +1621,7 @@ public sealed class MainForm : Form
         var image = new PictureBox { Width = S(285), Height = S(380), Anchor = AnchorStyles.Top | (narrow ? AnchorStyles.Left : AnchorStyles.Right), Margin = new Padding(0), SizeMode = PictureBoxSizeMode.StretchImage, Image = LoadImage(g) };
         page.Controls.Add(image, 0, 0);
         var headline = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true, Padding = new Padding(narrow ? 0 : S(28), 0, 0, 0), BackColor = page.BackColor };
-        var play = CreateIconButton("▶", "Launch game", (_, _) => ToggleGameProcess(g));
+        var play = CreateIconButton("▶", "Launch game", (_, _) => LaunchGameAsync(g));
         play.Enabled = PathRules.IsValidGameExe(gameAbsolutePath); play.Width = S(132); play.Height = S(92); play.Font = new Font("Segoe UI Symbol", S(36), FontStyle.Bold);
         var numberAndPlay = new FlowLayoutPanel { AutoSize = true, Height = S(105), WrapContents = false, Margin = Padding.Empty, BackColor = page.BackColor };
         numberAndPlay.Controls.Add(new Label { Text = $"#{g.Id}", Width = S(300), Height = S(92), TextAlign = ContentAlignment.MiddleLeft, Font = new Font(Font.FontFamily, S(47), FontStyle.Bold), ForeColor = Color.White }); if (play.Enabled) numberAndPlay.Controls.Add(play);
@@ -1582,7 +1640,7 @@ public sealed class MainForm : Form
         var metadata = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = false, Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(0, S(24), 0, 0), BackColor = page.BackColor };
         if (!narrow) page.SetColumnSpan(metadata, 2);
         metadata.Controls.Add(PathLink("Game: " + (string.IsNullOrEmpty(g.GamePath) ? _t["none"] : g.GamePath), gameAbsolutePath, PathRules.IsValidGameExe(gameAbsolutePath)));
-        metadata.Controls.Add(DetailLabel("Save root: " + _store.SaveRootName(g.SaveRootId)));
+        metadata.Controls.Add(DetailLabel("Save: " + SavePathDisplay(g)));
         metadata.Controls.Add(PathLink("Save: " + (string.IsNullOrEmpty(g.SavePath) ? _t["none"] : g.SavePath), saveAbsolutePath, PathRules.IsValidSaveTarget(saveAbsolutePath)));
         metadata.Controls.Add(DetailLabel("Region: " + RegionAlias(g.RegionCommandId)));
         var export = CreateIconButton("⇩", "Export game", (_, _) => ExportGame(g)); export.Margin = new Padding(0, S(28), 0, 0); metadata.Controls.Add(export);
@@ -1653,7 +1711,7 @@ public sealed class MainForm : Form
         numberAndLaunch.Controls.Add(new Label { Text = $"#{game.Id}", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Font = new Font(Font.FontFamily, S(42), FontStyle.Bold), ForeColor = Color.White }, 0, 0);
         if (gameValid)
         {
-            var launch = CreateIconButton("▶", "Launch game", (_, _) => ToggleGameProcess(game));
+            var launch = CreateIconButton("▶", "Launch game", (_, _) => LaunchGameAsync(game));
             launch.Anchor = AnchorStyles.None; launch.Width = S(132); launch.Height = S(92); launch.Font = new Font("Segoe UI Symbol", S(36), FontStyle.Bold);
             numberAndLaunch.Controls.Add(launch, 1, 0);
         }
@@ -1682,8 +1740,7 @@ public sealed class MainForm : Form
         // Section 3 uses the same full width as sections 1 and 2.
         var metadata = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, Width = sectionWidth, AutoSize = true, WrapContents = false, Padding = new Padding(0, S(16), 0, 0), BackColor = page.BackColor };
         metadata.Controls.Add(PathLink("Game: " + (string.IsNullOrEmpty(game.GamePath) ? _t["none"] : game.GamePath), gamePath, gameValid, sectionWidth));
-        metadata.Controls.Add(DetailLabel("Save root: " + _store.SaveRootName(game.SaveRootId), sectionWidth));
-        metadata.Controls.Add(PathLink("Save: " + (string.IsNullOrEmpty(game.SavePath) ? _t["none"] : game.SavePath), savePath, saveValid, sectionWidth));
+        metadata.Controls.Add(PathLink("Save: " + SavePathDisplay(game), savePath, saveValid, sectionWidth));
         metadata.Controls.Add(DetailLabel("Region: " + RegionAlias(game.RegionCommandId), sectionWidth));
         var export = CreateIconButton("⇩", "Export game", (_, _) => ExportGame(game)); export.Margin = new Padding(0, S(28), 0, 0); metadata.Controls.Add(export);
 
@@ -1757,7 +1814,7 @@ public sealed class MainForm : Form
         }
         _gameStatusClicks[game.Id] = now;
     }
-    private Label DetailLabel(string text, int? maximumWidth = null) => new() { Text = text, AutoSize = true, MaximumSize = new Size(maximumWidth ?? Math.Max(S(420), _content.ClientSize.Width - S(100)), 0), Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black, Margin = new Padding(0, S(8), 0, S(8)) };
+    private Label DetailLabel(string text, int? maximumWidth = null) => new() { Text = text, AutoSize = true, MaximumSize = new Size(maximumWidth ?? Math.Max(S(420), _content.ClientSize.Width - S(100)), 0), Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = Color.White, Margin = new Padding(0, S(8), 0, S(8)) };
     private Label PathLink(string label, string path, bool valid, int? maximumWidth = null)
     {
         var availableWidth = maximumWidth ?? Math.Max(S(420), _content.ClientSize.Width - _content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - S(24));
@@ -1777,7 +1834,7 @@ public sealed class MainForm : Form
         }
         return result.ToString();
     }
-    private async void ToggleGameProcess(GameEntry game)
+    private async void LaunchGameAsync(GameEntry game)
     {
         _store.NormalizeAndValidatePaths(); _store.Save();
         var resolvedGamePath = _store.ResolveGamePath(game.GamePath);
@@ -1819,7 +1876,7 @@ public sealed class MainForm : Form
             var row = form.RowCount++; var tall = field is TextBox { Multiline: true }; var panelField = field is FlowLayoutPanel; var dimension = _store.Data.TagSchema.FirstOrDefault(d => title == d.Name || title == $"{d.Name} (multi-select)"); var tagField = dimension is not null; form.RowStyles.Add(new RowStyle(SizeType.Absolute, tall ? 190 : panelField ? 140 : 132));
             var label = new Label { Text = title, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = tagField ? (dimension?.IsMultiSelect == true ? MultiTagColor : Color.FromArgb(190, 151, 235)) : Color.FromArgb(244, 204, 89) };
             field.Width = 670; field.Anchor = AnchorStyles.Left | AnchorStyles.Right; field.Margin = new Padding(0, tall ? 20 : panelField ? 12 : 26, 12, tall ? 20 : panelField ? 12 : 26); field.Font = new Font(Font.FontFamily, 15, FontStyle.Bold);
-            if (field is TextBox input) { input.BackColor = IsDarkTheme ? Color.FromArgb(22, 24, 25) : Color.White; input.ForeColor = IsDarkTheme ? Color.FromArgb(181, 228, 245) : Color.FromArgb(48, 110, 132); }
+            if (field is TextBox input) { input.BackColor = Color.FromArgb(22, 24, 25); input.ForeColor = Color.FromArgb(181, 228, 245); }
             if (field is ComboBox choice && !Equals(choice.Tag, "status-selector")) { choice.BackColor = tagField ? Color.FromArgb(48, 39, 61) : Color.FromArgb(22, 24, 25); choice.ForeColor = Color.FromArgb(181, 228, 245); }
             if (field is FlowLayoutPanel panel) { panel.AutoSize = false; panel.WrapContents = false; panel.Height = 106; panel.Padding = Padding.Empty; }
             var resetButton = CreateIconButton("↺", "Reset to default", (_, _) => reset()); resetButton.Anchor = AnchorStyles.None; resetButton.Margin = new Padding(10, 24, 10, 24);
@@ -1831,8 +1888,27 @@ public sealed class MainForm : Form
         var note = new TextBox { Text = draft.Note, Multiline = true, Height = 95 }; Row("Note", note, () => note.Text = "");
         var gamePath = new TextBox { Text = draft.GamePath, ReadOnly = true, Width = 555 };
         var saveRoot = ChoiceCombo(_store.Data.SaveRoots.Select(root => new Selection<int>(root.Id, root.Name)).ToList(), draft.SaveRootId); Row("Save root", saveRoot, () => SelectChoice(saveRoot, Defaults.SaveRootGameDirectoryId));
-        var gamePick = CreateIconButton("▣", "Choose game executable", (_, _) => { using var d = new OpenFileDialog { Filter = "Executable (*.exe)|*.exe" }; if (d.ShowDialog() == DialogResult.OK) { try { gamePath.Text = _store.ToRcRelativePath(d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }); var gamePanel = new FlowLayoutPanel(); gamePanel.Controls.Add(gamePath); gamePanel.Controls.Add(gamePick); Row("Game path (relative to rc)", gamePanel, () => gamePath.Text = "");
-        var savePath = new TextBox { Text = draft.SavePath, ReadOnly = true, Width = 450 }; var savePick = CreateIconButton("▣", "Choose save file", (_, _) => { using var d = new OpenFileDialog(); if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }); var saveFolder = CreateIconButton("▤", "Choose save folder", (_, _) => { using var d = new FolderBrowserDialog(); if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.SelectedPath); } catch (Exception ex) { MessageBox.Show(ex.Message); } } }); var savePanel = new FlowLayoutPanel(); savePanel.Controls.Add(savePath); savePanel.Controls.Add(savePick); savePanel.Controls.Add(saveFolder); Row("Save path (relative)", savePanel, () => savePath.Text = "");
+        var gamePick = CreateIconButton("▣", "Choose game executable", (_, _) =>
+        {
+            using var d = new OpenFileDialog { Filter = "Executable (*.exe)|*.exe", InitialDirectory = _store.Data.RcRootPath };
+            if (d.ShowDialog() == DialogResult.OK) { try { gamePath.Text = _store.ToRcRelativePath(d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
+        }); var gamePanel = new FlowLayoutPanel(); gamePanel.Controls.Add(gamePath); gamePanel.Controls.Add(gamePick); Row("Game path (relative to rc)", gamePanel, () => gamePath.Text = "");
+        string SaveRootDialogDirectory()
+        {
+            var directory = _store.ResolveSaveRoot(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text);
+            AppLog.Debug("UI", $"Opening Save Path selector at '{directory}'.");
+            return directory;
+        }
+        var savePath = new TextBox { Text = draft.SavePath, ReadOnly = true, Width = 450 }; var savePick = CreateIconButton("▣", "Choose save file", (_, _) =>
+        {
+            using var d = new OpenFileDialog { InitialDirectory = SaveRootDialogDirectory(), ClientGuid = Guid.NewGuid(), RestoreDirectory = true };
+            if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
+        }); var saveFolder = CreateIconButton("▤", "Choose save folder", (_, _) =>
+        {
+            var directory = SaveRootDialogDirectory();
+            using var d = new FolderBrowserDialog { InitialDirectory = directory, SelectedPath = directory };
+            if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.SelectedPath); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
+        }); var savePanel = new FlowLayoutPanel(); savePanel.Controls.Add(savePath); savePanel.Controls.Add(savePick); savePanel.Controls.Add(saveFolder); Row("Save path (relative)", savePanel, () => savePath.Text = "");
         var regionChoices = _store.Data.RegionCommands.Keys.OrderBy(id => id).Select(id => new Selection<int>(id, RegionAlias(id))).ToList(); var region = ChoiceCombo(regionChoices, draft.RegionCommandId); Row("Region command", region, () => SelectChoice(region, 0));
         var multiTagPickers = new Dictionary<int, FlowLayoutPanel>();
         // Keep first-level selection controls in the same grouped order as
@@ -1905,6 +1981,19 @@ public sealed class MainForm : Form
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
+    private bool SelectAndSaveDefaultCover(string sourcePath)
+    {
+        using var cropped = CropCover(sourcePath);
+        if (cropped is null) return false;
+        var temporary = Path.Combine(Path.GetTempPath(), "gameshelf-default-cover-" + Guid.NewGuid().ToString("N") + ".png");
+        try
+        {
+            cropped.Save(temporary, System.Drawing.Imaging.ImageFormat.Png);
+            _store.SetDefaultImage(temporary);
+            return true;
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
     private Bitmap? CropCover(string sourcePath)
     {
         using var loaded = Image.FromFile(sourcePath); using var source = new Bitmap(loaded);
@@ -1969,6 +2058,7 @@ public sealed class MainForm : Form
         _page = "global"; BuildTop(false); Clear();
         var stack = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Width = Math.Max(900, _content.ClientSize.Width - 80), Padding = new Padding(S(8)) };
         stack.Controls.Add(RcRootSection());
+        stack.Controls.Add(DefaultCoverSection());
         stack.Controls.Add(ArraySection("Save roots", _store.Data.SaveRoots.Select(root => (root.Id, root.Name)), "＋", AddSaveRootTile, SaveRootContext));
         stack.Controls.Add(ArraySection(_t["Region commands"], _store.Data.RegionCommands.Keys.Where(id => id != 0).Select(id => (id, RegionAlias(id))), "＋", AddRegionTile, RegionContext));
         stack.Controls.Add(ArraySection("Play " + _t["Statuses"], _store.Data.PlayStatuses.Select(x => (x.Id, x.Name)), "＋", () => AddStatusTile(StatusKind.Play), id => StatusContext(StatusKind.Play, id)));
@@ -1990,6 +2080,38 @@ public sealed class MainForm : Form
         var stored = string.IsNullOrWhiteSpace(_store.Data.RcRootPath) ? "Set rc root folder" : _store.Data.RcRootPath;
         var tile = ElementTile(stored, false, ChooseRcRoot, null); tile.Left = S(30); tile.Top = S(75); tile.Width = Math.Min(section.Width - S(60), S(680));
         section.Controls.Add(tile);
+        return section;
+    }
+    private Control DefaultCoverSection()
+    {
+        var sectionWidth = Math.Max(860, _content.ClientSize.Width - 100);
+        var section = new Panel { Width = sectionWidth, Height = S(360), Margin = new Padding(0, 0, 0, S(32)), BackColor = Color.FromArgb(35, 38, 39) };
+        section.Controls.Add(new Label { Text = "Default game cover", Left = S(22), Top = S(16), Width = section.Width - S(44), Height = S(40), Font = new Font(Font.FontFamily, S(21), FontStyle.Bold), ForeColor = Color.White });
+        section.Controls.Add(new Label { Text = "Used when a game has no individual cover image.", Left = S(22), Top = S(55), Width = section.Width - S(44), Height = S(30), Font = new Font(Font.FontFamily, S(13), FontStyle.Bold), ForeColor = Color.LightBlue });
+        var preview = new PictureBox { Left = S(30), Top = S(95), Width = S(165), Height = S(220), SizeMode = PictureBoxSizeMode.StretchImage, BorderStyle = BorderStyle.FixedSingle, Image = LoadImageFile(_store.DefaultImagePath), AccessibleName = "Default game cover" };
+        var choose = CreateIconButton("✂", "Choose and crop default cover", (_, _) =>
+        {
+            using var dialog = new OpenFileDialog { Filter = "Images (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg" };
+            if (dialog.ShowDialog() != DialogResult.OK) return;
+            try
+            {
+                if (!SelectAndSaveDefaultCover(dialog.FileName)) return;
+                var old = preview.Image;
+                preview.Image = LoadImageFile(_store.DefaultImagePath);
+                old?.Dispose();
+            }
+            catch (Exception ex) { MessageBox.Show(ex.Message); }
+        });
+        choose.Left = S(225); choose.Top = S(115); section.Controls.Add(preview); section.Controls.Add(choose);
+        if (!string.IsNullOrWhiteSpace(_store.Data.DefaultImageFile))
+        {
+            var clear = CreateIconButton("×", "Remove default cover", (_, _) =>
+            {
+                try { _store.ClearDefaultImage(); ShowGlobal(true); }
+                catch (Exception ex) { MessageBox.Show(ex.Message); }
+            });
+            clear.Left = S(225); clear.Top = S(215); section.Controls.Add(clear);
+        }
         return section;
     }
     private void ChooseRcRoot()
@@ -2025,7 +2147,7 @@ public sealed class MainForm : Form
     {
         var values = items.ToList(); var sectionWidth = Math.Max(860, _content.ClientSize.Width - 100); var columns = Math.Max(1, (sectionWidth - S(44)) / S(200)); var rows = (int)Math.Ceiling((values.Count + 1d) / columns);
         var section = new Panel { Width = sectionWidth, Height = S(85) + rows * S(152), Margin = new Padding(0, 0, 0, S(32)), BackColor = Color.FromArgb(35, 38, 39) };
-        section.Controls.Add(new Label { Text = title, Left = S(22), Top = S(16), Width = section.Width - S(44), Height = S(40), Font = new Font(Font.FontFamily, S(21), FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black });
+        section.Controls.Add(new Label { Text = title, Left = S(22), Top = S(16), Width = section.Width - S(44), Height = S(40), Font = new Font(Font.FontFamily, S(21), FontStyle.Bold), ForeColor = Color.White });
         var tiles = new FlowLayoutPanel { Left = S(22), Top = S(75), Width = section.Width - S(44), Height = section.Height - S(83), AutoScroll = false, Padding = new Padding(S(8)), BackColor = section.BackColor };
         foreach (var item in values) tiles.Controls.Add(ElementTile(item.text, false, () => { }, menu(item.id)));
         tiles.Controls.Add(ElementTile(addGlyph, true, add, null)); section.Controls.Add(tiles); EnableWheelScroll(tiles); return section;
@@ -2103,9 +2225,9 @@ public sealed class MainForm : Form
     }
     private Panel ElementTile(string text, bool add, Action click, ContextMenuStrip? context)
     {
-        var tile = new Panel { Width = S(176), Height = S(128), Margin = new Padding(S(12)), BackColor = add ? (IsDarkTheme ? Color.FromArgb(43, 133, 91) : Color.FromArgb(47, 157, 100)) : (IsDarkTheme ? Color.FromArgb(52, 61, 62) : Color.FromArgb(255, 232, 179)), Cursor = Cursors.Hand, AccessibleName = add ? "Add" : text };
-        tile.Paint += (_, e) => { using var pen = new Pen(add ? Color.FromArgb(133, 216, 143) : (IsDarkTheme ? Color.FromArgb(181, 228, 245) : Color.FromArgb(178, 102, 28)), 2); e.Graphics.DrawRectangle(pen, 1, 1, tile.Width - 3, tile.Height - 3); };
-        var label = new Label { Text = text, Dock = DockStyle.Fill, Padding = new Padding(S(9)), TextAlign = ContentAlignment.MiddleCenter, AutoEllipsis = true, Font = new Font(add ? new FontFamily("Segoe UI Symbol") : Font.FontFamily, add ? S(42) : S(16), FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black };
+        var tile = new Panel { Width = S(176), Height = S(128), Margin = new Padding(S(12)), BackColor = add ? Color.FromArgb(43, 133, 91) : Color.FromArgb(52, 61, 62), Cursor = Cursors.Hand, AccessibleName = add ? "Add" : text };
+        tile.Paint += (_, e) => { using var pen = new Pen(add ? Color.FromArgb(133, 216, 143) : Color.FromArgb(181, 228, 245), 2); e.Graphics.DrawRectangle(pen, 1, 1, tile.Width - 3, tile.Height - 3); };
+        var label = new Label { Text = text, Dock = DockStyle.Fill, Padding = new Padding(S(9)), TextAlign = ContentAlignment.MiddleCenter, AutoEllipsis = true, Font = new Font(add ? new FontFamily("Segoe UI Symbol") : Font.FontFamily, add ? S(42) : S(16), FontStyle.Bold), ForeColor = Color.White };
         tile.Controls.Add(label);
         void Activate(object? _, MouseEventArgs e) { if (e.Button == MouseButtons.Left) click(); }
         tile.MouseUp += Activate; label.MouseUp += Activate;
@@ -2192,7 +2314,7 @@ public sealed class MainForm : Form
     {
         var sectionHeight = S(132) + (_store.Data.TagSchema.Count + 1) * S(154);
         var section = new Panel { Width = Math.Max(860, _content.ClientSize.Width - 100), Height = sectionHeight, Margin = new Padding(0, 0, 0, S(32)), BackColor = Color.FromArgb(35, 38, 39) };
-        section.Controls.Add(new Label { Text = _t["Dimensions"] + " (single / multi-select)", Left = S(22), Top = S(16), Width = section.Width - S(44), Height = S(40), Font = new Font(Font.FontFamily, S(21), FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black });
+        section.Controls.Add(new Label { Text = _t["Dimensions"] + " (single / multi-select)", Left = S(22), Top = S(16), Width = section.Width - S(44), Height = S(40), Font = new Font(Font.FontFamily, S(21), FontStyle.Bold), ForeColor = Color.White });
         section.Controls.Add(new Label { Text = "Right-click a dimension to rename, change its selection type, or delete it. Left-click a value to edit it.", Left = S(24), Top = S(58), Width = section.Width - S(48), Height = S(28), Font = new Font(Font.FontFamily, S(12), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245) });
         var rows = new FlowLayoutPanel { Left = S(22), Top = S(105), Width = section.Width - S(44), Height = section.Height - S(113), FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = false, Padding = new Padding(S(8)), BackColor = section.BackColor };
         // Keep the two selection models in contiguous groups so a global
@@ -2250,7 +2372,7 @@ public sealed class MainForm : Form
     }
     private GroupBox GlobalGroup(string title, Action add, IEnumerable<Selection<int>> options, Action<int> edit)
     {
-        var group = new GroupBox { Text = title, Width = 540, Height = 285, Margin = new Padding(16), Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black }; var list = new ListBox { Left = 14, Top = 38, Width = 510, Height = 165, DisplayMember = "Text", DataSource = options.ToList(), Font = new Font(Font.FontFamily, 14, FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black, BackColor = IsDarkTheme ? Color.FromArgb(25, 25, 25) : Color.White }; group.Controls.Add(list);
+        var group = new GroupBox { Text = title, Width = 540, Height = 285, Margin = new Padding(16), Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = Color.White }; var list = new ListBox { Left = 14, Top = 38, Width = 510, Height = 165, DisplayMember = "Text", DataSource = options.ToList(), Font = new Font(Font.FontFamily, 14, FontStyle.Bold), ForeColor = Color.White, BackColor = Color.FromArgb(25, 25, 25) }; group.Controls.Add(list);
         var addButton = TextButton(_t["Add"], (_, _) => add()); addButton.Location = new Point(14, 215); group.Controls.Add(addButton);
         var editButton = TextButton(_t["Edit"], (_, _) => { if (list.SelectedItem is Selection<int> s) edit(s.Value); }); editButton.Location = new Point(116, 215); group.Controls.Add(editButton);
         var deleteButton = TextButton(_t["Delete"], (_, _) => { if (list.SelectedItem is not Selection<int> s) return; if (MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; try { if (title == _t["Dimensions"]) _store.DeleteDimension(s.Value); else _store.DeleteRegionCommand(s.Value); ShowGlobal(true); } catch (Exception ex) { MessageBox.Show(ex.Message); } }); deleteButton.Location = new Point(218, 215); group.Controls.Add(deleteButton);
@@ -2271,7 +2393,7 @@ public sealed class MainForm : Form
     private GroupBox StatusGroup(StatusKind kind)
     {
         var title = kind == StatusKind.Play ? "Play " + _t["Statuses"] : "Game " + _t["Statuses"]; var statuses = kind == StatusKind.Play ? _store.Data.PlayStatuses : _store.Data.GameStatuses;
-        var group = new GroupBox { Text = title, Width = 540, Height = 285, Margin = new Padding(16), Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black }; var list = new ListBox { Left = 14, Top = 38, Width = 510, Height = 165, DisplayMember = "Text", DataSource = statuses.Select(x => new Selection<int>(x.Id, $"{x.Id}: {x.Name} ({x.Color})")).ToList(), Font = new Font(Font.FontFamily, 14, FontStyle.Bold), ForeColor = IsDarkTheme ? Color.White : Color.Black, BackColor = IsDarkTheme ? Color.FromArgb(25, 25, 25) : Color.White }; group.Controls.Add(list);
+        var group = new GroupBox { Text = title, Width = 540, Height = 285, Margin = new Padding(16), Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = Color.White }; var list = new ListBox { Left = 14, Top = 38, Width = 510, Height = 165, DisplayMember = "Text", DataSource = statuses.Select(x => new Selection<int>(x.Id, $"{x.Id}: {x.Name} ({x.Color})")).ToList(), Font = new Font(Font.FontFamily, 14, FontStyle.Bold), ForeColor = Color.White, BackColor = Color.FromArgb(25, 25, 25) }; group.Controls.Add(list);
         var addButton = TextButton(_t["Add"], (_, _) => { var name = Prompt("Status name"); var color = name is null ? null : Prompt("Color (#RRGGBB)", "#808080"); if (name is not null && color is not null) { _store.AddStatus(kind, name, color); ShowGlobal(true); } }); addButton.Location = new Point(14, 215); group.Controls.Add(addButton);
         var deleteButton = TextButton(_t["Delete"], (_, _) => { if (list.SelectedItem is not Selection<int> s || MessageBox.Show(_t["Confirm deletion"], "GameShelf", MessageBoxButtons.YesNo) != DialogResult.Yes) return; try { _store.DeleteStatus(kind, s.Value); ShowGlobal(true); } catch (Exception ex) { MessageBox.Show(ex.Message); } }); deleteButton.Location = new Point(116, 215); group.Controls.Add(deleteButton);
         return group;
