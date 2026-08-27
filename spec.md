@@ -1,6 +1,6 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.1.0 (stable)
+**Current application specification:** 2.1.1a (alpha)
 **Savedata format:** v5
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
@@ -62,7 +62,7 @@ The user-owned `savedata/` directory is never included in source-control or rele
 | Area | Stored data |
 | --- | --- |
 | `Settings` | UI language, persisted launcher-version policy and last versioned executable, last supported page and selected game, normal/fullscreen window state and bounds, title/status/tag filters, Library-card dimension choices, and custom button vectors. |
-| `RcRootPath` | Absolute path of the common `rc` game-resource root. |
+| `RcRootPath` / `DefaultImageFile` | Absolute path of the common `rc` game-resource root and the managed fallback cover filename used for games without an individual cover. |
 | `SaveRoots` | Named Windows path templates used as save roots. |
 | `RegionCommands` / `RegionAliases` | Region-launch commands and their short display aliases. |
 | `TagSchema` | Ordered single-select or multi-select dimensions, each with an integer ID, mapped display values, and a persisted value order (multi-select values can be moved earlier/later). |
@@ -80,6 +80,7 @@ The legacy `GameEntry.SaveMethod` field is retained only so older data can be re
 - A save root of `.` means the directory containing the resolved game executable.
 - Built-in portable save roots are `.` (Game directory), `%USERPROFILE%\\Documents`, and `%USERPROFILE%\\AppData`. Environment variables are expanded on the current computer, supporting a different Windows user profile.
 - Absolute legacy paths are readable for compatibility, but new selections are normalized to their corresponding relative form.
+- The game-file picker starts in the configured `rc` directory. Save file/folder pickers start in the resolved directory for the currently selected save root (game directory for `.`, or the current user's AppData/Documents root), falling back to the nearest existing parent if needed.
 
 ## 5. Permanent visual and window model
 
@@ -136,6 +137,8 @@ In Library management, the dimension selector chooses up to three displayed sing
 
 ## 8. Game detail page
 
+**Current Section 3 rule:** There is no separate Save root line. Its `Save:` line combines the root indicator and stored relative path: it begins with `.` / `AppData` / `Documents`, never the current user's full profile path, followed by the relative save path.
+
 Entering game detail always refreshes the selected game path state. The page is horizontally centred and consists of three equal-width stacked sections; no child may cross its invisible section boundary.
 
 1. **Section 1** — left **1A** is a 3:4 portrait cover; right **1B** contains number/Launch, title, and tags. `1B1` splits number and Launch evenly, and `1B1`, `1B2`, and `1B3` may grow to their content. The right side determines the section height; the cover follows that height at 3:4, is vertically aligned to it, and has a 480-pixel minimum where the available column permits.
@@ -160,7 +163,7 @@ The play-status lamp accepts a double click within 0.8 seconds to move to the ne
 
 ### 9.1 First-level game edit
 
-First-level edit changes one game. It provides boxed interactive text controls for title, note, paths and selectable properties. Image and save/game path selection controls are placed below the normal properties in the scrollable page. Choosing a cover opens a crop/zoom surface before the managed image is saved.
+First-level edit changes one game. It provides boxed interactive text controls for title, note, paths and selectable properties. Image and save/game path selection controls are placed below the normal properties in the scrollable page. Choosing a cover opens a crop/zoom surface before the managed image is saved. The executable picker opens at `rc`; save selectors open at the active save root.
 
 The selected save root, region-command alias and tag values are shown as mapped text; persisted IDs remain internal. Every multi-select dimension has its own clearly labelled `(<name> multi-select)` first-level selection row, using orange mutually-aware checkbox tiles: at least one value is required, and `none` cannot coexist with another value. Play status is not set here because it is changed from the detail lamp. Game status is also absent: it is path-derived and can only be cycled from the detail lamp within its current valid or invalid path group.
 
@@ -169,6 +172,7 @@ The selected save root, region-command alias and tag values are shown as mapped 
 Global management owns:
 
 - the `rc` root;
+- a default managed game cover, selected with the same crop/zoom workflow as an individual cover and used wherever a game has no individual cover;
 - save-root names and Windows path templates;
 - region commands (full command plus required short alias);
 - play and game statuses, including RGB/hex colour and vector artwork;

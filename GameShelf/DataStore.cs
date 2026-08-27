@@ -122,6 +122,12 @@ public sealed class DataStore : IDisposable
 
     public GameEntry GetGame(int id) => Data.Games.FirstOrDefault(g => g.Id == id) ?? throw new InvalidOperationException("Game not found.");
     public string ImagePath(GameEntry game) => string.IsNullOrWhiteSpace(game.ImageFile) ? "" : Path.Combine(_paths.ImagesDirectory, Path.GetFileName(game.ImageFile));
+    public string DefaultImagePath => string.IsNullOrWhiteSpace(Data.DefaultImageFile) ? "" : Path.Combine(_paths.ImagesDirectory, Path.GetFileName(Data.DefaultImageFile));
+    public string CoverImagePath(GameEntry game)
+    {
+        var individual = ImagePath(game);
+        return !string.IsNullOrWhiteSpace(individual) && File.Exists(individual) ? individual : DefaultImagePath;
+    }
     public string ResolveGamePath(string storedPath)
     {
         if (string.IsNullOrWhiteSpace(storedPath)) return "";
@@ -208,6 +214,24 @@ public sealed class DataStore : IDisposable
         game.ImageFile = targetName;
         try { Save(); }
         catch { game.ImageFile = Path.GetFileName(old); if (File.Exists(target)) File.Delete(target); throw; }
+        if (!string.IsNullOrEmpty(old) && File.Exists(old)) File.Delete(old);
+    }
+    public void SetDefaultImage(string source)
+    {
+        var targetName = "default-" + Guid.NewGuid().ToString("N") + ".png";
+        var target = Path.Combine(_paths.ImagesDirectory, targetName);
+        ImageService.ProcessToCard(source, target);
+        var old = DefaultImagePath;
+        Data.DefaultImageFile = targetName;
+        try { Save(); }
+        catch { Data.DefaultImageFile = Path.GetFileName(old); if (File.Exists(target)) File.Delete(target); throw; }
+        if (!string.IsNullOrEmpty(old) && File.Exists(old)) File.Delete(old);
+    }
+    public void ClearDefaultImage()
+    {
+        var old = DefaultImagePath;
+        Data.DefaultImageFile = "";
+        Save();
         if (!string.IsNullOrEmpty(old) && File.Exists(old)) File.Delete(old);
     }
 
@@ -476,6 +500,7 @@ public sealed class DataStore : IDisposable
         foreach (var id in Data.RegionAliases.Keys.Where(id => !Data.RegionCommands.ContainsKey(id)).ToList()) Data.RegionAliases.Remove(id);
         Data.TagSchema ??= [];
         Data.RcRootPath ??= "";
+        Data.DefaultImageFile ??= "";
         Data.SaveRoots = Data.SaveRoots?.Any() == true ? Data.SaveRoots : Defaults.SaveRoots();
         if (!Data.SaveRoots.Any(root => root.Id == Defaults.SaveRootGameDirectoryId)) Data.SaveRoots.Insert(0, Defaults.SaveRoots().First());
         foreach (var d in Data.TagSchema)
