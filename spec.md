@@ -1,6 +1,6 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.2.0a (alpha)
+**Current application specification:** 2.2.0b (beta)
 **Savedata format:** v5
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 

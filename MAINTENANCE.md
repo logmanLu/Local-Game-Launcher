@@ -1,6 +1,10 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.2.0a` (alpha)
+**Current application patch:** `2.2.0b` (beta)
+
+### 2.2.0b (beta)
+
+- Promoted the tested 2.2.0a Junction, single-instance and F5 path-status implementation unchanged to beta. The package retains Debug diagnostics for user testing.
 
 ### 2.2.0a (alpha)
 

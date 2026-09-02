@@ -6,10 +6,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>GameShelf</AssemblyName>
-    <Version>2.2.0-alpha</Version>
+    <Version>2.2.0-beta</Version>
     <AssemblyVersion>2.2.0.0</AssemblyVersion>
     <FileVersion>2.2.0.0</FileVersion>
-    <InformationalVersion>2.2.0a</InformationalVersion>
+    <InformationalVersion>2.2.0b</InformationalVersion>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
