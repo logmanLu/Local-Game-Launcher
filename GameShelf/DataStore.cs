@@ -209,9 +209,21 @@ public sealed class DataStore : IDisposable
         {
             Directory.CreateDirectory(linkParent);
             Directory.CreateDirectory(targetPath);
+            // Do not route Unicode paths through cmd.exe/mklink. cmd's command
+            // parser can reinterpret quotes in paths with spaces and corrupt
+            // non-ASCII filenames under its active code page. PowerShell's
+            // Junction provider is the same Windows feature but accepts the
+            // path values as encoded .NET strings without shell interpolation.
+            var encodedLink = Convert.ToBase64String(Encoding.UTF8.GetBytes(linkPath));
+            var encodedTarget = Convert.ToBase64String(Encoding.UTF8.GetBytes(targetPath));
+            var script = "$ErrorActionPreference='Stop'; "
+                + "$link=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + encodedLink + "')); "
+                + "$target=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + encodedTarget + "')); "
+                + "New-Item -ItemType Junction -Path $link -Target $target -ErrorAction Stop | Out-Null";
+            var encodedScript = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
             using var command = new Process
             {
-                StartInfo = new ProcessStartInfo("cmd.exe")
+                StartInfo = new ProcessStartInfo("powershell.exe")
                 {
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
@@ -219,10 +231,11 @@ public sealed class DataStore : IDisposable
                     CreateNoWindow = true
                 }
             };
-            command.StartInfo.ArgumentList.Add("/d");
-            command.StartInfo.ArgumentList.Add("/s");
-            command.StartInfo.ArgumentList.Add("/c");
-            command.StartInfo.ArgumentList.Add($"mklink /J \"{linkPath}\" \"{targetPath}\"");
+            command.StartInfo.ArgumentList.Add("-NoLogo");
+            command.StartInfo.ArgumentList.Add("-NoProfile");
+            command.StartInfo.ArgumentList.Add("-NonInteractive");
+            command.StartInfo.ArgumentList.Add("-EncodedCommand");
+            command.StartInfo.ArgumentList.Add(encodedScript);
             if (!command.Start()) throw new InvalidOperationException("Windows could not start the Junction creation command.");
             var output = command.StandardOutput.ReadToEnd();
             var error = command.StandardError.ReadToEnd();
