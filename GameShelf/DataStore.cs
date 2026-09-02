@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
@@ -167,6 +169,89 @@ public sealed class DataStore : IDisposable
         var relative = Path.GetRelativePath(root, absolutePath);
         if (relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar)) throw new InvalidOperationException("The save location must be inside the selected save root.");
         return relative;
+    }
+    /// <summary>
+    /// Creates a directory junction at the game's configured save path which
+    /// redirects writes to a managed folder beside the game executable.  A
+    /// junction is deliberately only supported for non-game-directory roots:
+    /// otherwise the source and target would both live in the game tree and
+    /// provide no portable-save benefit.
+    /// </summary>
+    public void CreateSaveJunction(GameEntry game)
+    {
+        ArgumentNullException.ThrowIfNull(game);
+        var root = Data.SaveRoots.FirstOrDefault(item => item.Id == game.SaveRootId)
+            ?? throw new InvalidOperationException("The selected save root does not exist.");
+        if (string.Equals(root.PathTemplate, ".", StringComparison.Ordinal))
+            throw new InvalidOperationException("A save junction is only available when Save root is not Game directory.");
+        if (string.IsNullOrWhiteSpace(game.SavePath))
+            throw new InvalidOperationException("Choose a save folder before creating a save junction.");
+
+        var gameExecutable = ResolveGamePath(game.GamePath);
+        if (!PathRules.IsValidGameExe(gameExecutable))
+            throw new InvalidOperationException("Choose a valid game executable before creating a save junction.");
+        var gameDirectory = Path.GetDirectoryName(gameExecutable)
+            ?? throw new InvalidOperationException("Could not determine the game directory.");
+        var linkPath = ResolveSavePath(game);
+        if (string.IsNullOrWhiteSpace(linkPath) || !Path.IsPathFullyQualified(linkPath))
+            throw new InvalidOperationException("The configured save path is invalid.");
+        if (File.Exists(linkPath) || Directory.Exists(linkPath))
+            throw new InvalidOperationException("The configured save path already exists. Move or remove it before creating a junction.");
+
+        var linkParent = Path.GetDirectoryName(linkPath)
+            ?? throw new InvalidOperationException("Could not determine the save path parent folder.");
+        var targetPath = Path.Combine(gameDirectory, $"Save_Junction_{game.Id}");
+        if (PathsEqual(linkPath, targetPath))
+            throw new InvalidOperationException("The save junction source and target cannot be the same folder.");
+
+        var targetCreated = !Directory.Exists(targetPath);
+        try
+        {
+            Directory.CreateDirectory(linkParent);
+            Directory.CreateDirectory(targetPath);
+            using var command = new Process
+            {
+                StartInfo = new ProcessStartInfo("cmd.exe")
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            command.StartInfo.ArgumentList.Add("/d");
+            command.StartInfo.ArgumentList.Add("/s");
+            command.StartInfo.ArgumentList.Add("/c");
+            command.StartInfo.ArgumentList.Add($"mklink /J \"{linkPath}\" \"{targetPath}\"");
+            if (!command.Start()) throw new InvalidOperationException("Windows could not start the Junction creation command.");
+            var output = command.StandardOutput.ReadToEnd();
+            var error = command.StandardError.ReadToEnd();
+            command.WaitForExit();
+            if (command.ExitCode != 0 || !PathRules.IsJunction(linkPath))
+            {
+                var detail = string.Join(" ", new[] { output, error }.Where(text => !string.IsNullOrWhiteSpace(text))).Trim();
+                throw new InvalidOperationException("Windows could not create the save junction." + (string.IsNullOrEmpty(detail) ? "" : " " + detail));
+            }
+            AppLog.Information("Junction", $"Created save junction for game {game.Id}: '{linkPath}' -> '{targetPath}'.");
+        }
+        catch (Exception ex)
+        {
+            // The target is created by this command, so remove only an empty
+            // target that we created ourselves. Never touch user save data.
+            if (targetCreated)
+            {
+                try { if (Directory.Exists(targetPath) && !Directory.EnumerateFileSystemEntries(targetPath).Any()) Directory.Delete(targetPath); }
+                catch { /* Preserve a target we cannot safely clean up. */ }
+            }
+            AppLog.Error("Junction", $"Could not create save junction for game {game.Id}: '{linkPath}' -> '{targetPath}'.", ex);
+            throw;
+        }
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        try { return string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)), Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)), StringComparison.OrdinalIgnoreCase); }
+        catch { return false; }
     }
     public void SetRcRootPath(string path)
     {
@@ -693,6 +778,45 @@ public static class PathRules
 {
     public static bool IsValidGameExe(string? path) => !string.IsNullOrWhiteSpace(path) && Path.IsPathFullyQualified(path) && string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase) && File.Exists(path);
     public static bool IsValidSaveTarget(string? path) => !string.IsNullOrWhiteSpace(path) && Path.IsPathFullyQualified(path) && (File.Exists(path) || Directory.Exists(path));
+
+    // Junctions and directory symbolic links are both reparse points. The
+    // reparse tag returned by FindFirstFile distinguishes a real NTFS junction
+    // (IO_REPARSE_TAG_MOUNT_POINT) from every other kind of link.
+    public static bool IsJunction(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return false;
+        var handle = FindFirstFile(path, out var data);
+        if (handle == InvalidFindHandle) return false;
+        try
+        {
+            return (data.Attributes & FileAttributes.ReparsePoint) != 0
+                && data.ReparseTag == IoReparseTagMountPoint;
+        }
+        finally { FindClose(handle); }
+    }
+
+    private const uint IoReparseTagMountPoint = 0xA0000003;
+    private static readonly IntPtr InvalidFindHandle = new(-1);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct FindData
+    {
+        public FileAttributes Attributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint ReparseTag;
+        public uint Reserved1;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string FileName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)] public string AlternateFileName;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr FindFirstFile(string fileName, out FindData findFileData);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FindClose(IntPtr findFile);
 }
 
 public static class TextRules

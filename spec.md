@@ -1,6 +1,6 @@
 # GameShelf architecture specification
 
-**Current application specification:** 2.1.1 (stable)
+**Current application specification:** 2.2.0a (alpha)
 **Savedata format:** v5
 **Scope:** This document describes the implemented application architecture and its persistent-data contract. It is the source of truth for future maintenance; `MAINTENANCE.md` contains the chronological patch history and troubleshooting record.
 
@@ -44,7 +44,7 @@ The user-owned `savedata/` directory is never included in source-control or rele
 
 | Component | Responsibility |
 | --- | --- |
-| `Program` | Initializes WinForms, paths and logging; owns top-level exception reporting and the `DataStore`/`MainForm` lifetime. |
+| `Program` | Initializes WinForms, paths and logging; owns the per-application-root single-instance mutex, top-level exception reporting and the `DataStore`/`MainForm` lifetime. |
 | `AppPaths` | Resolves the application-root, savedata, image, database and log locations. |
 | `AppLog` | Dependency-free daily rolling diagnostics. Logging failures never stop the launcher. |
 | `Domain` | Persistent DTOs, default statuses/save roots, and data-format version constants. |
@@ -81,6 +81,7 @@ The legacy `GameEntry.SaveMethod` field is retained only so older data can be re
 - Built-in portable save roots are `.` (Game directory), `%USERPROFILE%\\Documents`, and `%USERPROFILE%\\AppData`. Environment variables are expanded on the current computer, supporting a different Windows user profile.
 - Absolute legacy paths are readable for compatibility, but new selections are normalized to their corresponding relative form.
 - The game-file picker starts in the configured `rc` directory. Save file/folder pickers receive the resolved directory for the currently selected save root exactly (game directory for `.`, or the current user's AppData/Documents root). The Save file dialog uses an isolated native-dialog client state, and the Save folder dialog sets both its `InitialDirectory` and `SelectedPath`, so a previously visited folder cannot override that requested root.
+- For a non-`.` save root, first-level edit can create a Windows directory Junction at the resolved `SavePath`. It first creates `Save_Junction_<game-id>` beside the game executable as the target, then invokes Windows `mklink /J` with the resolved save path as the Junction path. The Save path must not already exist; failures are surfaced to the user and written to the log. This does not alter the stored portable path representation.
 
 ## 5. Permanent visual and window model
 
@@ -113,6 +114,8 @@ All normal pages are scrollable where needed. Buttons use coloured rounded squar
 | `Alt+F4` | Close the launcher |
 
 The last page is persisted only for Library and game detail. If the launcher is closed on detail, it reopens on that game detail; closing while in first-level edit reopens at that game detail instead. Other management pages reopen at Library to avoid restoring incomplete edit state.
+
+Only one GameShelf process may run for a given application root at a time. A normal second start reports that the launcher is already running and exits, preventing concurrent savedata writes. An orderly version/language handoff passes a private command-line marker to its successor; that successor waits up to eight seconds for the predecessor to relinquish the same mutex.
 
 ## 7. Library / Home
 
@@ -154,7 +157,7 @@ Every detail tag chip is a measured single-line box: its width grows to contain 
 - When a game executable is invalid, **Installed locally** becomes **In other machine** and **Backuped** becomes **Storaged**. **In other machine**, **Data missing** and **Storaged** otherwise remain unchanged.
 - When a game executable is valid, **In other machine** and **Data missing** become **Installed locally**; **Storaged** becomes **Backuped**. **Installed locally** and **Backuped** otherwise remain unchanged.
 - Save-path availability does not change the game status and does not enable or hide Launch.
-- Valid game/save paths are light green and clickable to open the resolved folder. Invalid paths are bright red and are not clickable.
+- Valid game paths and ordinary valid save paths are light green and clickable to open the resolved folder. A valid save path that is specifically an NTFS Junction is light blue; its target remains opened through the Junction path. Invalid paths are bright red and are not clickable.
 - Launch is shown only when the resolved game executable is valid. It is always the normal Launch icon; the Stop-game feature was intentionally removed.
 
 The play-status lamp accepts a double click within 0.8 seconds to move to the next configured play status, cycling at the end. On a valid executable path, the game-status lamp alternates **Installed locally** and **Backuped**; on an invalid path it cycles **In other machine**, **Data missing**, and **Storaged**. The valid and invalid groups never cross through double-clicking. Status icon meanings come from the stored vectors; defaults include hollow/half/filled squares for play states and filled circle/hollow circle/cross/hollow cloud/filled cloud for game states.
@@ -165,7 +168,7 @@ The play-status lamp accepts a double click within 0.8 seconds to move to the ne
 
 First-level edit changes one game. It provides boxed interactive text controls for title, note, paths and selectable properties. Image and save/game path selection controls are placed below the normal properties in the scrollable page. Choosing a cover opens a crop/zoom surface before the managed image is saved. The executable picker opens at `rc`; save selectors open at the active save root.
 
-The selected save root, region-command alias and tag values are shown as mapped text; persisted IDs remain internal. Every multi-select dimension has its own clearly labelled `(<name> multi-select)` first-level selection row, using orange mutually-aware checkbox tiles: at least one value is required, and `none` cannot coexist with another value. Play status is not set here because it is changed from the detail lamp. Game status is also absent: it is path-derived and can only be cycled from the detail lamp within its current valid or invalid path group.
+The selected save root, region-command alias and tag values are shown as mapped text; persisted IDs remain internal. When the selected Save root is not **Game directory**, its row exposes a Junction action. It validates the unsaved current game/save fields, creates the `Save_Junction_<game-id>` target beside the resolved game executable, and creates the selected absolute save-path Junction to that target; the button is hidden for the Game-directory root. Every multi-select dimension has its own clearly labelled `(<name> multi-select)` first-level selection row, using orange mutually-aware checkbox tiles: at least one value is required, and `none` cannot coexist with another value. Play status is not set here because it is changed from the detail lamp. Game status is also absent: it is path-derived and can only be cycled from the detail lamp within its current valid or invalid path group.
 
 ### 9.2 Second-level global management
 
