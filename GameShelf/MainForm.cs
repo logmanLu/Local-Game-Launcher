@@ -434,13 +434,13 @@ public sealed class MainForm : Form
         _nativeMenuVisible = false;
     }
 
-    private bool RestartWithLauncher(string launcher, string reason)
+    private bool RestartWithLauncher(string launcher, string reason, bool allowCurrentExecutable = false)
     {
-        if (string.Equals(Path.GetFullPath(launcher), Path.GetFullPath(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase)) return false;
+        if (!allowCurrentExecutable && string.Equals(Path.GetFullPath(launcher), Path.GetFullPath(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase)) return false;
         try
         {
             AppLog.Information("UI", $"Restarting GameShelf with {reason}: '{launcher}'.");
-            Process.Start(new ProcessStartInfo(launcher) { WorkingDirectory = _store.Paths.Root, UseShellExecute = true });
+            Process.Start(new ProcessStartInfo(launcher) { WorkingDirectory = _store.Paths.Root, UseShellExecute = true, Arguments = "--launcher-handoff" });
             _launcherHandoffInProgress = true;
             Close();
             return true;
@@ -455,7 +455,7 @@ public sealed class MainForm : Form
         _store.Data.Settings.Language = language;
         _store.Save();
         AppLog.Information("UI", $"Changed UI language to '{language}', restarting to apply it.");
-        Application.Restart();
+        RestartWithLauncher(Application.ExecutablePath, "language change", allowCurrentExecutable: true);
     }
 
     private void PersistWindow()
@@ -476,6 +476,7 @@ public sealed class MainForm : Form
         if (e.KeyCode == Keys.F2 && _page != "library") { _management = false; ShowLibrary(); e.Handled = true; }
         else if (e.KeyCode == Keys.F3) { if (_page == "library") { _management = !_management; ShowLibrary(rebuildCards: false); } else if (_page == "detail") ShowEdit(); else if (_page == "edit") ShowGlobal(); e.Handled = true; }
         else if (e.KeyCode == Keys.F4 && !e.Alt && (_page == "detail" || _page == "edit" || _page == "global" || (_page == "library" && _management))) { if (_page == "global") ShowEdit(); else if (_page == "edit") ShowDetail(); else { _management = false; ShowLibrary(rebuildCards: false); } e.Handled = true; }
+        else if (e.KeyCode == Keys.F5 && (_page == "detail" || (_page == "library" && !_management))) { RefreshPresentationPathStatus(); e.Handled = true; e.SuppressKeyPress = true; }
         else if (e.KeyCode == Keys.F11) { ToggleFullscreen(); e.Handled = true; }
         else if (e.KeyCode == Keys.Escape && _fullScreen) { ToggleFullscreen(); e.Handled = true; }
     }
@@ -1009,6 +1010,28 @@ public sealed class MainForm : Form
         var restored = RestoreCachedLibraryCards();
         if (!restored) ShowLibraryLoading();
         ScheduleLibraryPreparation(restored);
+    }
+
+    /// <summary>
+    /// Explicit status refresh for the two presentation pages. Library path
+    /// checks keep using the existing background snapshot/reconciliation path,
+    /// so F5 preserves the realized card grid and scroll location. Detail must
+    /// also reconsider its Save-path colour and Launch visibility, therefore it
+    /// rebuilds once while preserving the current vertical scroll offset.
+    /// </summary>
+    private void RefreshPresentationPathStatus()
+    {
+        if (_page == "library" && !_management)
+        {
+            AppLog.Debug("UI", "F5 requested Library path-status refresh.");
+            ScheduleLibraryPreparation(cacheWasRestored: _libraryCards is not null && !_libraryCards.IsDisposed);
+            return;
+        }
+        if (_page == "detail")
+        {
+            AppLog.Debug("UI", $"F5 requested detail path-status refresh for game {_selectedId?.ToString() ?? "none"}.");
+            ShowDetail(preserveScroll: true);
+        }
     }
     private bool RestoreCachedLibraryCards()
     {
@@ -1651,6 +1674,7 @@ public sealed class MainForm : Form
     {
         var gamePath = _store.ResolveGamePath(game.GamePath); var savePath = _store.ResolveSavePath(game);
         var gameValid = PathRules.IsValidGameExe(gamePath); var saveValid = PathRules.IsValidSaveTarget(savePath);
+        var saveIsJunction = saveValid && PathRules.IsJunction(savePath);
         var availableWidth = Math.Max(S(520), _content.ClientSize.Width - _content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - S(8));
         var pageWidth = Math.Min(availableWidth, S(1160)); var sectionWidth = pageWidth - S(48);
         var holder = new Panel { Width = availableWidth, Margin = Padding.Empty, BackColor = _content.BackColor };
@@ -1740,7 +1764,7 @@ public sealed class MainForm : Form
         // Section 3 uses the same full width as sections 1 and 2.
         var metadata = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, Width = sectionWidth, AutoSize = true, WrapContents = false, Padding = new Padding(0, S(16), 0, 0), BackColor = page.BackColor };
         metadata.Controls.Add(PathLink("Game: " + (string.IsNullOrEmpty(game.GamePath) ? _t["none"] : game.GamePath), gamePath, gameValid, sectionWidth));
-        metadata.Controls.Add(PathLink("Save: " + SavePathDisplay(game), savePath, saveValid, sectionWidth));
+        metadata.Controls.Add(PathLink("Save: " + SavePathDisplay(game), savePath, saveValid, sectionWidth, saveIsJunction));
         metadata.Controls.Add(DetailLabel("Region: " + RegionAlias(game.RegionCommandId), sectionWidth));
         var export = CreateIconButton("⇩", "Export game", (_, _) => ExportGame(game)); export.Margin = new Padding(0, S(28), 0, 0); metadata.Controls.Add(export);
 
@@ -1815,11 +1839,14 @@ public sealed class MainForm : Form
         _gameStatusClicks[game.Id] = now;
     }
     private Label DetailLabel(string text, int? maximumWidth = null) => new() { Text = text, AutoSize = true, MaximumSize = new Size(maximumWidth ?? Math.Max(S(420), _content.ClientSize.Width - S(100)), 0), Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = Color.White, Margin = new Padding(0, S(8), 0, S(8)) };
-    private Label PathLink(string label, string path, bool valid, int? maximumWidth = null)
+    private Label PathLink(string label, string path, bool valid, int? maximumWidth = null, bool isJunction = false)
     {
         var availableWidth = maximumWidth ?? Math.Max(S(420), _content.ClientSize.Width - _content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - S(24));
         var displayLabel = WrapPathLabel(label, Math.Clamp(availableWidth / Math.Max(S(10), 12), 36, 72));
-        var link = new Label { Text = displayLabel, AutoSize = true, MaximumSize = new Size(availableWidth, 0), AccessibleName = label, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = valid ? Color.FromArgb(161, 226, 174) : Color.FromArgb(255, 94, 94), Cursor = valid ? Cursors.Hand : Cursors.Default, Margin = new Padding(0, S(8), 0, S(8)) };
+        var pathColor = valid
+            ? isJunction ? Color.FromArgb(181, 228, 245) : Color.FromArgb(161, 226, 174)
+            : Color.FromArgb(255, 94, 94);
+        var link = new Label { Text = displayLabel, AutoSize = true, MaximumSize = new Size(availableWidth, 0), AccessibleName = label, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = pathColor, Cursor = valid ? Cursors.Hand : Cursors.Default, Margin = new Padding(0, S(8), 0, S(8)) };
         link.Click += (_, _) => { if (File.Exists(path)) Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true }); else if (Directory.Exists(path)) Process.Start(new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true }); };
         return link;
     }
@@ -1871,7 +1898,7 @@ public sealed class MainForm : Form
         var holder = new Panel { Width = holderWidth, Tag = "edit-holder", BackColor = _content.BackColor, Margin = Padding.Empty };
         var form = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, Width = Math.Min(S(1120), holderWidth), Padding = new Padding(20), BackColor = Color.FromArgb(35, 38, 39) };
         form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, S(190))); form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, S(105)));
-        void Row(string title, Control field, Action reset)
+        void Row(string title, Control field, Action reset, Control? rightAction = null)
         {
             var row = form.RowCount++; var tall = field is TextBox { Multiline: true }; var panelField = field is FlowLayoutPanel; var dimension = _store.Data.TagSchema.FirstOrDefault(d => title == d.Name || title == $"{d.Name} (multi-select)"); var tagField = dimension is not null; form.RowStyles.Add(new RowStyle(SizeType.Absolute, tall ? 190 : panelField ? 140 : 132));
             var label = new Label { Text = title, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font(Font.FontFamily, 16, FontStyle.Bold), ForeColor = tagField ? (dimension?.IsMultiSelect == true ? MultiTagColor : Color.FromArgb(190, 151, 235)) : Color.FromArgb(244, 204, 89) };
@@ -1879,7 +1906,7 @@ public sealed class MainForm : Form
             if (field is TextBox input) { input.BackColor = Color.FromArgb(22, 24, 25); input.ForeColor = Color.FromArgb(181, 228, 245); }
             if (field is ComboBox choice && !Equals(choice.Tag, "status-selector")) { choice.BackColor = tagField ? Color.FromArgb(48, 39, 61) : Color.FromArgb(22, 24, 25); choice.ForeColor = Color.FromArgb(181, 228, 245); }
             if (field is FlowLayoutPanel panel) { panel.AutoSize = false; panel.WrapContents = false; panel.Height = 106; panel.Padding = Padding.Empty; }
-            var resetButton = CreateIconButton("↺", "Reset to default", (_, _) => reset()); resetButton.Anchor = AnchorStyles.None; resetButton.Margin = new Padding(10, 24, 10, 24);
+            var resetButton = rightAction ?? CreateIconButton("↺", "Reset to default", (_, _) => reset()); resetButton.Anchor = AnchorStyles.None; resetButton.Margin = new Padding(10, 24, 10, 24);
             var view = field is TextBox or ComboBox ? FieldCard(field, tagField) : field;
             view.Anchor = AnchorStyles.Left | AnchorStyles.Right; view.Margin = new Padding(0, tall ? 20 : panelField ? 12 : 26, 12, tall ? 20 : panelField ? 12 : 26);
             form.Controls.Add(label, 0, row); form.Controls.Add(view, 1, row); form.Controls.Add(resetButton, 2, row);
@@ -1887,12 +1914,12 @@ public sealed class MainForm : Form
         var title = new TextBox { Text = draft.Title }; Row("Title", title, () => title.Text = "unknown");
         var note = new TextBox { Text = draft.Note, Multiline = true, Height = 95 }; Row("Note", note, () => note.Text = "");
         var gamePath = new TextBox { Text = draft.GamePath, ReadOnly = true, Width = 555 };
-        var saveRoot = ChoiceCombo(_store.Data.SaveRoots.Select(root => new Selection<int>(root.Id, root.Name)).ToList(), draft.SaveRootId); Row("Save root", saveRoot, () => SelectChoice(saveRoot, Defaults.SaveRootGameDirectoryId));
+        var saveRoot = ChoiceCombo(_store.Data.SaveRoots.Select(root => new Selection<int>(root.Id, root.Name)).ToList(), draft.SaveRootId);
         var gamePick = CreateIconButton("▣", "Choose game executable", (_, _) =>
         {
             using var d = new OpenFileDialog { Filter = "Executable (*.exe)|*.exe", InitialDirectory = _store.Data.RcRootPath };
             if (d.ShowDialog() == DialogResult.OK) { try { gamePath.Text = _store.ToRcRelativePath(d.FileName); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
-        }); var gamePanel = new FlowLayoutPanel(); gamePanel.Controls.Add(gamePath); gamePanel.Controls.Add(gamePick); Row("Game path (relative to rc)", gamePanel, () => gamePath.Text = "");
+        }); var gamePanel = new FlowLayoutPanel(); gamePanel.Controls.Add(gamePath); gamePanel.Controls.Add(gamePick);
         string SaveRootDialogDirectory()
         {
             var directory = _store.ResolveSaveRoot(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text);
@@ -1908,7 +1935,34 @@ public sealed class MainForm : Form
             var directory = SaveRootDialogDirectory();
             using var d = new FolderBrowserDialog { InitialDirectory = directory, SelectedPath = directory };
             if (d.ShowDialog() == DialogResult.OK) { try { savePath.Text = _store.ToSaveRelativePath(ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId), gamePath.Text, d.SelectedPath); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
-        }); var savePanel = new FlowLayoutPanel(); savePanel.Controls.Add(savePath); savePanel.Controls.Add(savePick); savePanel.Controls.Add(saveFolder); Row("Save path (relative)", savePanel, () => savePath.Text = "");
+        }); var savePanel = new FlowLayoutPanel(); savePanel.Controls.Add(savePath); savePanel.Controls.Add(savePick); savePanel.Controls.Add(saveFolder);
+        var createJunction = CreateIconButton("⛓", "Create save junction", (_, _) =>
+        {
+            try
+            {
+                var proposed = PackageService.Clone(draft);
+                proposed.GamePath = gamePath.Text;
+                proposed.SaveRootId = ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId);
+                proposed.SavePath = savePath.Text;
+                _store.CreateSaveJunction(proposed);
+                MessageBox.Show($"Created Save_Junction_{draft.Id} and the save-path Junction.", "GameShelf", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Could not create save junction:\n" + ex.Message, "GameShelf", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        });
+        void UpdateJunctionButton()
+        {
+            var usable = ChoiceId(saveRoot, Defaults.SaveRootGameDirectoryId) != Defaults.SaveRootGameDirectoryId;
+            createJunction.Visible = usable;
+            createJunction.Enabled = usable;
+        }
+        saveRoot.SelectedIndexChanged += (_, _) => UpdateJunctionButton();
+        UpdateJunctionButton();
+        Row("Save root", saveRoot, () => SelectChoice(saveRoot, Defaults.SaveRootGameDirectoryId), createJunction);
+        Row("Game path (relative to rc)", gamePanel, () => gamePath.Text = "");
+        Row("Save path (relative)", savePanel, () => savePath.Text = "");
         var regionChoices = _store.Data.RegionCommands.Keys.OrderBy(id => id).Select(id => new Selection<int>(id, RegionAlias(id))).ToList(); var region = ChoiceCombo(regionChoices, draft.RegionCommandId); Row("Region command", region, () => SelectChoice(region, 0));
         var multiTagPickers = new Dictionary<int, FlowLayoutPanel>();
         // Keep first-level selection controls in the same grouped order as

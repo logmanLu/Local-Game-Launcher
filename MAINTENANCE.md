@@ -1,6 +1,14 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.1.1` (stable)
+**Current application patch:** `2.2.0a` (alpha)
+
+### 2.2.0a (alpha)
+
+- Added first-level Save Junction creation for non-game-directory save roots. It creates `Save_Junction_<game-id>` beside the selected game's executable, then creates a Windows Junction at the resolved Save path. Existing save paths are never overwritten; creation errors are displayed and logged.
+- Corrected Junction creation for save paths containing spaces or Unicode text. It now uses PowerShell `New-Item -ItemType Junction` with base64-encoded path arguments instead of a `cmd.exe` command string, avoiding `cmd` quoting/code-page corruption.
+- Added **F5** path-status refresh for normal Library and game detail. Library retains its current virtual grid and scroll position while it performs the existing background status reconciliation; detail preserves vertical scroll while updating path-derived state, Save-path colour and Launch visibility.
+- Detail Save paths now identify a valid NTFS Junction with light-blue text. Ordinary valid paths stay light green and invalid paths stay bright red.
+- Added a per-application-root single-instance mutex. A duplicate ordinary start exits with an explanatory dialog; version and language handoffs wait briefly for the previous process so they remain seamless without allowing concurrent savedata writers.
 
 ### 2.1.1 (stable)
 
