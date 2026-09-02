@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>GameShelf</AssemblyName>
-    <Version>2.2.0-a</Version>
+    <Version>2.2.0-alpha</Version>
     <AssemblyVersion>2.2.0.0</AssemblyVersion>
     <FileVersion>2.2.0.0</FileVersion>
     <InformationalVersion>2.2.0a</InformationalVersion>
