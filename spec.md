@@ -109,6 +109,7 @@ All normal pages are scrollable where needed. Buttons use coloured rounded squar
 | `F2` | Return to Library from a non-Library page. It is intentionally inert while already on Library, including Library management mode. |
 | `F3` | Game management or global management, according to context |
 | `F4` | Back to Library or the preceding supported page |
+| `F5` | In normal Library or game detail only, refresh resolved path availability and path-derived game status. It is inert in management/edit pages. Library uses its existing background card reconciliation; detail preserves its vertical scroll while recomputing Save-path colour and Launch visibility. |
 | `F11` | Toggle fullscreen |
 | `Esc` | Exit fullscreen |
 | `Alt+F4` | Close the launcher |

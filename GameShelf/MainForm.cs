@@ -476,6 +476,7 @@ public sealed class MainForm : Form
         if (e.KeyCode == Keys.F2 && _page != "library") { _management = false; ShowLibrary(); e.Handled = true; }
         else if (e.KeyCode == Keys.F3) { if (_page == "library") { _management = !_management; ShowLibrary(rebuildCards: false); } else if (_page == "detail") ShowEdit(); else if (_page == "edit") ShowGlobal(); e.Handled = true; }
         else if (e.KeyCode == Keys.F4 && !e.Alt && (_page == "detail" || _page == "edit" || _page == "global" || (_page == "library" && _management))) { if (_page == "global") ShowEdit(); else if (_page == "edit") ShowDetail(); else { _management = false; ShowLibrary(rebuildCards: false); } e.Handled = true; }
+        else if (e.KeyCode == Keys.F5 && (_page == "detail" || (_page == "library" && !_management))) { RefreshPresentationPathStatus(); e.Handled = true; e.SuppressKeyPress = true; }
         else if (e.KeyCode == Keys.F11) { ToggleFullscreen(); e.Handled = true; }
         else if (e.KeyCode == Keys.Escape && _fullScreen) { ToggleFullscreen(); e.Handled = true; }
     }
@@ -1009,6 +1010,28 @@ public sealed class MainForm : Form
         var restored = RestoreCachedLibraryCards();
         if (!restored) ShowLibraryLoading();
         ScheduleLibraryPreparation(restored);
+    }
+
+    /// <summary>
+    /// Explicit status refresh for the two presentation pages. Library path
+    /// checks keep using the existing background snapshot/reconciliation path,
+    /// so F5 preserves the realized card grid and scroll location. Detail must
+    /// also reconsider its Save-path colour and Launch visibility, therefore it
+    /// rebuilds once while preserving the current vertical scroll offset.
+    /// </summary>
+    private void RefreshPresentationPathStatus()
+    {
+        if (_page == "library" && !_management)
+        {
+            AppLog.Debug("UI", "F5 requested Library path-status refresh.");
+            ScheduleLibraryPreparation(cacheWasRestored: _libraryCards is not null && !_libraryCards.IsDisposed);
+            return;
+        }
+        if (_page == "detail")
+        {
+            AppLog.Debug("UI", $"F5 requested detail path-status refresh for game {_selectedId?.ToString() ?? "none"}.");
+            ShowDetail(preserveScroll: true);
+        }
     }
     private bool RestoreCachedLibraryCards()
     {
