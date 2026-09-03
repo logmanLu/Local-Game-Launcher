@@ -33,6 +33,11 @@ public sealed class MainForm : Form
     private Localizer _t;
     private readonly BufferedFlowLayoutPanel _content = new() { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(42) };
     private sealed record LibraryCardSnapshot(string PresentationKey, List<int> GameIds, List<string> GameFingerprints);
+    // A Library rebuild must not make management operations feel like a
+    // navigation action.  Keep a semantic anchor (the first visible game),
+    // rather than only a raw scrollbar value: items can be inserted or removed
+    // above it while the background preparation is running.
+    private sealed record LibraryScrollAnchor(int GameId, int PreviousIndex, int OffsetFromCardTop);
     private sealed record LibraryDimensionProjection(int DimensionId, bool IsMultiSelect);
     private sealed record LibraryGameProjection(int Id, string Title, int PlayStatusId, int GameStatusId, List<int> Tags, List<List<int>> MultiTags, string ResolvedGamePath);
     private sealed record LibraryQuerySnapshot(string TitleSearch, int? PlayStatusFilter, int? GameStatusFilter, Dictionary<int, List<int>> TagFilters,
@@ -1004,12 +1009,13 @@ public sealed class MainForm : Form
     }
     private void ShowLibrary(bool rebuildCards = true)
     {
+        var rebuildAnchor = CaptureLibraryScrollAnchor();
         _page = "library"; BuildTop(!_management);
         // Reattach the previous frame first.  The post-paint reconciliation
         // below computes paths, filtering and ordering away from the UI thread.
         var restored = RestoreCachedLibraryCards();
         if (!restored) ShowLibraryLoading();
-        ScheduleLibraryPreparation(restored);
+        ScheduleLibraryPreparation(restored, rebuildAnchor);
     }
 
     /// <summary>
@@ -1052,6 +1058,34 @@ public sealed class MainForm : Form
         AppLog.Debug("Library", "Restored cached Library card grid before reconciliation.");
         return true;
     }
+    private LibraryScrollAnchor? CaptureLibraryScrollAnchor()
+    {
+        if (_libraryCards is null || _libraryCards.IsDisposed || _libraryCards.Parent != _content) return null;
+        var scrollY = _content.VerticalScroll.Value;
+        var gridTop = Math.Max(0, scrollY - _content.Padding.Top);
+        return _libraryCards.TryCaptureScrollAnchor(gridTop, out var gameId, out var index, out var offset)
+            ? new LibraryScrollAnchor(gameId, index, offset)
+            : null;
+    }
+    private void RestoreLibraryScrollAnchor(LibraryScrollAnchor? anchor, VirtualGameCardPanel grid)
+    {
+        if (anchor is null || !IsHandleCreated) return;
+        BeginInvoke((Action)(() =>
+        {
+            if (IsDisposed || _page != "library" || _libraryCards != grid || grid.IsDisposed) return;
+            // Restore to the same game and intra-card offset where possible.
+            // If that game was removed or filtered out, the grid chooses the
+            // item now occupying the closest previous index.  This is UI-only
+            // state, so it is clamped to the new scrollbar range.
+            var desired = _content.Padding.Top + grid.ScrollTopForAnchor(anchor.GameId, anchor.PreviousIndex, anchor.OffsetFromCardTop);
+            var maximum = Math.Max(_content.VerticalScroll.Minimum, _content.VerticalScroll.Maximum - _content.VerticalScroll.LargeChange + 1);
+            var restored = Math.Clamp(desired, _content.VerticalScroll.Minimum, maximum);
+            _content.AutoScrollPosition = new Point(0, restored);
+            _cachedLibraryScrollY = _content.VerticalScroll.Value;
+            RefreshLibraryCardViewport();
+            AppLog.Debug("Library", $"Restored Library rebuild anchor for game {anchor.GameId} at scroll {_cachedLibraryScrollY}.");
+        }));
+    }
     private void ShowLibraryLoading()
     {
         Clear(discardLibrary: true);
@@ -1060,7 +1094,7 @@ public sealed class MainForm : Form
             Text = "Loading library…", AutoSize = true, Font = new Font(Font.FontFamily, S(20), FontStyle.Bold), ForeColor = Color.FromArgb(181, 228, 245), Margin = new Padding(S(18))
         });
     }
-    private void ScheduleLibraryPreparation(bool cacheWasRestored)
+    private void ScheduleLibraryPreparation(bool cacheWasRestored, LibraryScrollAnchor? rebuildAnchor = null)
     {
         _libraryPreparationCancellation?.Cancel();
         _libraryPreparationCancellation?.Dispose();
@@ -1075,7 +1109,7 @@ public sealed class MainForm : Form
             BeginInvoke((Action)(() =>
             {
                 if (IsDisposed || cancellation.IsCancellationRequested || generation != _libraryPreparationGeneration || _page != "library") return;
-                ApplyPreparedLibrary(task.Result, cacheWasRestored);
+                ApplyPreparedLibrary(task.Result, cacheWasRestored, rebuildAnchor);
             }));
         }, TaskScheduler.Default);
     }
@@ -1127,7 +1161,7 @@ public sealed class MainForm : Form
         }
         return new LibraryPreparationResult(matched.OrderBy(item => item.Id).Select(item => item.Id).ToList(), statuses);
     }
-    private void ApplyPreparedLibrary(LibraryPreparationResult prepared, bool cacheWasRestored)
+    private void ApplyPreparedLibrary(LibraryPreparationResult prepared, bool cacheWasRestored, LibraryScrollAnchor? rebuildAnchor)
     {
         var byId = _store.Data.Games.ToDictionary(game => game.Id);
         var statusChanged = false;
@@ -1143,7 +1177,7 @@ public sealed class MainForm : Form
             !string.Equals(_libraryCardSnapshot.PresentationKey, presentationKey, StringComparison.Ordinal) ||
             !_libraryCardSnapshot.GameIds.SequenceEqual(games.Select(game => game.Id)))
         {
-            PopulateLibraryCards(games);
+            PopulateLibraryCards(games, rebuildAnchor ?? CaptureLibraryScrollAnchor());
             AppLog.Debug("Library", "Prepared Library data required a virtual-grid rebuild.");
             return;
         }
@@ -1164,9 +1198,10 @@ public sealed class MainForm : Form
         }
     }
 
-    private void PopulateLibraryCards(IReadOnlyList<GameEntry>? preparedGames = null)
+    private void PopulateLibraryCards(IReadOnlyList<GameEntry>? preparedGames = null, LibraryScrollAnchor? rebuildAnchor = null)
     {
         if (_page != "library") return;
+        rebuildAnchor ??= CaptureLibraryScrollAnchor();
         Clear(discardLibrary: true);
         var games = preparedGames?.ToList() ?? FilteredGames().OrderBy(game => game.Id).ToList();
         var grid = new VirtualGameCardPanel(games, GameCard, ConfigureLibraryCard)
@@ -1181,6 +1216,7 @@ public sealed class MainForm : Form
         _cachedLibraryScrollY = 0;
         _libraryCardSnapshot = new LibraryCardSnapshot(LibraryPresentationKey(), games.Select(game => game.Id).ToList(), games.Select(GameCardFingerprint).ToList());
         ScheduleLibraryCardViewportRefresh();
+        RestoreLibraryScrollAnchor(rebuildAnchor, grid);
     }
     private string LibraryPresentationKey()
     {
@@ -2595,6 +2631,40 @@ public sealed class VirtualGameCardPanel : Panel
         _viewportTop = -1; _viewportHeight = -1;
         _realizedFirst = -1; _realizedLast = -1;
         ClearRealized();
+    }
+
+    /// <summary>
+    /// Captures the first visible card as a stable rebuild anchor.  The caller
+    /// supplies the scroll position relative to this grid, while the returned
+    /// offset preserves the partial-card position within the viewport.
+    /// </summary>
+    public bool TryCaptureScrollAnchor(int viewportTop, out int gameId, out int index, out int offsetFromCardTop)
+    {
+        gameId = 0; index = 0; offsetFromCardTop = 0;
+        if (_games.Count == 0 || _rows == 0) return false;
+        var row = Math.Clamp(Math.Max(0, viewportTop - _cardMargin.Top) / _rowStride, 0, _rows - 1);
+        index = Math.Min(_games.Count - 1, row * _columns);
+        gameId = _games[index].Id;
+        offsetFromCardTop = viewportTop - (_cardMargin.Top + row * _rowStride);
+        return true;
+    }
+
+    /// <summary>
+    /// Resolves a captured anchor against the current ordered games.  If the
+    /// anchored game no longer exists (deleted or filtered), use the item at
+    /// the nearest surviving prior index instead.
+    /// </summary>
+    public int ScrollTopForAnchor(int gameId, int previousIndex, int offsetFromCardTop)
+    {
+        if (_games.Count == 0 || _rows == 0) return 0;
+        var index = -1;
+        for (var current = 0; current < _games.Count; current++)
+        {
+            if (_games[current].Id == gameId) { index = current; break; }
+        }
+        if (index < 0) index = Math.Clamp(previousIndex, 0, _games.Count - 1);
+        var row = index / _columns;
+        return Math.Max(0, _cardMargin.Top + row * _rowStride + offsetFromCardTop);
     }
 
     public void UpdateViewport(int top, int height)
