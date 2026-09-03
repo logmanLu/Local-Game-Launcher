@@ -1,6 +1,10 @@
 # GameShelf maintenance and troubleshooting guide
 
-**Current application patch:** `2.2.0b` (beta)
+**Current application patch:** `2.2.0b1` (beta)
+
+### 2.2.0b1 (beta)
+
+- Library virtual-grid rebuilds now preserve a semantic scroll anchor. Before a management operation, filter change, import, add or delete replaces the source list, GameShelf records the first visible game ID and its intra-card offset. The new list returns to that game; if it no longer exists, it uses the closest surviving former index, clamped safely to the new scrollbar range. The anchor is session-only UI state and never changes savedata.
 
 ### 2.2.0b (beta)
 
